@@ -70,10 +70,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
         print("\n📊 Generating report...")
         let outputDir = "output"
         try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
-        let reportPath = "\(outputDir)/index.html"
-
         let generator = ReportGenerator()
         let projectName = URL(fileURLWithPath: path).lastPathComponent
+        let reportPath = "\(outputDir)/\(projectName).html"
         try generator.generate(
             graph: graph,
             outputPath: reportPath,
