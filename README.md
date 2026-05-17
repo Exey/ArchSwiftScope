@@ -1,8 +1,8 @@
 # 🔬 ArchSwiftScope
 
-**Native macOS CLI tool for Swift codebase intelligence** — find critical files, generate dependency graphs, learning paths.
+**macOS CLI tool for Swift codebase intelligence** — find critical files, generate dependency graphs, learning paths.
 
-Built 100% in Swift using Apple-native technologies. **Fully offline. No network required. No telemetry. No accounts.**
+Built 100% in Swift. **Fully offline. No network required. No telemetry. No accounts.**
 
 > AI-powered features (natural-language Q&A) are available as a separate opt-in — see [AI Integration (Opt-In)](#-ai-integration-opt-in).
 
