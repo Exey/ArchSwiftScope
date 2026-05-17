@@ -113,6 +113,37 @@ struct AntipatternAnalyzer {
     static func viol(_ filePath: String, _ lineIdx: Int, _ lines: [String]) -> APViolation {
         APViolation(file: displayPath(filePath), fullPath: filePath, line: lineIdx + 1, snippet: snippet(lines[lineIdx]))
     }
+
+    /// Returns the line with all string literal content replaced by spaces,
+    /// so checks don't trigger on keywords that appear only inside strings or docs.
+    static func stripStrings(_ line: String) -> String {
+        var result = ""
+        var inString = false
+        var idx = line.startIndex
+        while idx < line.endIndex {
+            let c = line[idx]
+            if c == "\\" && inString {
+                result.append("  ")
+                let next = line.index(after: idx)
+                idx = next < line.endIndex ? line.index(after: next) : next
+                continue
+            }
+            if c == "\"" {
+                inString.toggle()
+                result.append(c)
+            } else {
+                result.append(inString ? " " : c)
+            }
+            idx = line.index(after: idx)
+        }
+        return result
+    }
+
+    /// True if the line is a comment or documentation line.
+    static func isComment(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        return t.hasPrefix("//") || t.hasPrefix("*") || t.hasPrefix("/*")
+    }
 }
 
 // MARK: - Check Registry
@@ -140,8 +171,8 @@ private extension AntipatternAnalyzer {
                 detect: checkUserDefaultsSensitive
             ),
             APCheck(
-                name: "Never Force Unwrap Optionals (!)",
-                description: "Force-unwrapping a nil optional crashes the app with a fatal error, producing a poor user experience and no recovery path. Always use `if let`, `guard let`, `map`, or the nil-coalescing operator `??` to safely handle the absent case.",
+                name: "Never Force Unwrap or Force Try (! / try!)",
+                description: "Force-unwrapping a nil optional (`x!`) and force-try (`try!`) both crash the app with a fatal error on failure, producing a poor user experience and no recovery path. Use `if let`, `guard let`, `??`, or `try?`/`do-catch` to handle the absent or error case safely. `try!` violations are listed first.",
                 priority: .high,
                 detect: checkForceUnwrap
             ),
@@ -156,6 +187,18 @@ private extension AntipatternAnalyzer {
                 description: "In escaping closures that capture `self`, a strong reference cycle prevents deallocation and leaks memory. Always use a capture list `[weak self]` (or `[unowned self]` only when self is guaranteed to outlive the closure) and unwrap with `guard let self` inside.",
                 priority: .high,
                 detect: checkRetainCycles
+            ),
+            APCheck(
+                name: "Avoid DispatchQueue.main.sync",
+                description: "Calling `DispatchQueue.main.sync` from the main thread causes a guaranteed deadlock. Even guarding with `Thread.isMainThread` is fragile — use `DispatchQueue.main.async` instead, or restructure to avoid dispatching to main from main.",
+                priority: .high,
+                detect: checkDispatchMainSync
+            ),
+            APCheck(
+                name: "Avoid Blocking the Main Thread",
+                description: "Synchronous file and network I/O on the main thread freezes the UI until the operation completes. Move `String(contentsOfFile:)`, `Data(contentsOf:)`, and similar blocking calls to a background queue using `DispatchQueue.global()` or Swift Concurrency.",
+                priority: .high,
+                detect: checkBlockingMainThread
             ),
 
             // ─── MEDIUM ─────────────────────────────────────────────────────
@@ -201,6 +244,30 @@ private extension AntipatternAnalyzer {
                 priority: .medium,
                 detect: checkMissingDeinit
             ),
+            APCheck(
+                name: "Prefer Swift Native Types Over ObjC Bridges",
+                description: "`NSDate`, `NSURL`, and `NSData` are Objective-C bridge types. In Swift code prefer `Date`, `URL`, and `Data` — they are lighter, work seamlessly with Swift generics and Codable, and avoid unnecessary bridging overhead.",
+                priority: .medium,
+                detect: checkNSObjCBridgeTypes
+            ),
+            APCheck(
+                name: "Selector Without @objc",
+                description: "A method referenced by `#selector(...)` must be visible to the Objective-C runtime. Without `@objc` (or `@IBAction`/`@IBOutlet`) the code compiles but fails silently at runtime. Add `@objc` to any method passed to `#selector`.",
+                priority: .medium,
+                detect: checkSelectorWithoutObjc
+            ),
+            APCheck(
+                name: "Replace Deprecated openURL",
+                description: "`UIApplication.shared.openURL(_:)` was deprecated in iOS 10. Use `open(_:options:completionHandler:)` instead — it supports the system to handle the transition and provides a completion callback.",
+                priority: .medium,
+                detect: checkDeprecatedOpenURL
+            ),
+            APCheck(
+                name: "Missing super Call in Overridden Lifecycle Methods",
+                description: "Overriding `viewDidLoad`, `viewWillAppear`, `viewDidAppear`, and similar UIKit lifecycle methods without calling `super` skips framework setup and can cause subtle, hard-to-diagnose bugs. Always call the `super` implementation.",
+                priority: .medium,
+                detect: checkMissingSuperCall
+            ),
 
             // ─── LOW ────────────────────────────────────────────────────────
             APCheck(
@@ -227,6 +294,18 @@ private extension AntipatternAnalyzer {
                 priority: .low,
                 detect: checkExplicitTypeInit
             ),
+            APCheck(
+                name: "Use os_log Instead of NSLog",
+                description: "`NSLog` writes synchronously to stderr and is significantly slower than the unified logging system. Use `os_log` or `Logger` (iOS 14+) for structured, performant logging that integrates with Console.app and Instruments.",
+                priority: .low,
+                detect: checkNSLogUsage
+            ),
+            APCheck(
+                name: "Avoid #imageLiteral",
+                description: "`#imageLiteral` embeds image references at compile time, inflates binary size, slows compilation, and makes code reviews harder. Load images at runtime with `UIImage(named:)` or SwiftUI's `Image(_:)` instead.",
+                priority: .low,
+                detect: checkImageLiteral
+            ),
         ]
     }
 }
@@ -243,7 +322,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             guard let match = pattern.firstMatch(in: line, range: range),
                   let valRange = Range(match.range(at: 2), in: line) else { continue }
@@ -259,8 +338,9 @@ private extension AntipatternAnalyzer {
     static func checkInsecureRandom(_ filePath: String, _ lines: [String]) -> [APViolation] {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
-            if line.contains("arc4random()") || line.contains("arc4random_uniform(") {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if code.contains("arc4random()") || code.contains("arc4random_uniform(") {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -274,7 +354,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
@@ -286,28 +366,36 @@ private extension AntipatternAnalyzer {
 
     static func checkForceUnwrap(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        guard let pattern = try? NSRegularExpression(
+        guard let unwrapPattern = try? NSRegularExpression(
             pattern: #"[a-zA-Z0-9_\])]!(?!=)(?![a-zA-Z_(])"#
+        ),
+        let tryBangPattern = try? NSRegularExpression(
+            pattern: #"\btry!\s"#
         ) else { return [] }
-        var out: [APViolation] = []
+        var tryBangs: [APViolation] = []
+        var others: [APViolation] = []
         for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("//") { continue }
+            if isComment(line) { continue }
             if trimmed.contains("@IBOutlet") || trimmed.contains("@IBAction") { continue }
-            let range = NSRange(line.startIndex..., in: line)
-            if pattern.firstMatch(in: line, range: range) != nil {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
+            let code = stripStrings(line)
+            let range = NSRange(code.startIndex..., in: code)
+            if tryBangPattern.firstMatch(in: code, range: range) != nil {
+                tryBangs.append(viol(filePath, i, lines))
+            } else if unwrapPattern.firstMatch(in: code, range: range) != nil {
+                others.append(viol(filePath, i, lines))
             }
+            if tryBangs.count + others.count >= maxViolations { break }
         }
-        return out
+        return Array((tryBangs + others).prefix(maxViolations))
     }
 
     static func checkForceCast(_ filePath: String, _ lines: [String]) -> [APViolation] {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
-            if line.contains(" as!") || line.contains("\tas!") {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if code.contains(" as!") || code.contains("\tas!") {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -321,7 +409,7 @@ private extension AntipatternAnalyzer {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("//") { continue }
+            if isComment(line) { continue }
             if line.contains("[weak self]") || line.contains("[unowned self]") { continue }
             let range = NSRange(line.startIndex..., in: line)
             guard closurePattern.firstMatch(in: line, range: range) != nil else { continue }
@@ -353,7 +441,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             if line.contains("final ") || line.contains("open ") { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
@@ -370,7 +458,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
@@ -387,7 +475,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             guard let match = pattern.firstMatch(in: line, range: range),
                   let baseRange = Range(match.range(at: 1), in: line) else { continue }
@@ -408,7 +496,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
@@ -422,7 +510,7 @@ private extension AntipatternAnalyzer {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("//") { continue }
+            if isComment(line) { continue }
             // Single-line: } catch { } or catch { }
             if (trimmed.hasPrefix("} catch") || trimmed.hasPrefix("catch")) && trimmed.hasSuffix("{") {
                 // Check next line for immediate }
@@ -445,7 +533,7 @@ private extension AntipatternAnalyzer {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("//") { continue }
+            if isComment(line) { continue }
             if line.contains("@IBOutlet") || line.contains("@IBAction") { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
@@ -503,7 +591,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
@@ -546,7 +634,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             guard let match = pattern.firstMatch(in: line, range: range),
                   let typeRange = Range(match.range(at: 1), in: line) else { continue }
@@ -558,4 +646,184 @@ private extension AntipatternAnalyzer {
         return out
     }
 
+}
+
+// MARK: - New HIGH Checks
+
+private extension AntipatternAnalyzer {
+
+    static func checkDispatchMainSync(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            guard code.contains("DispatchQueue.main.sync") || code.contains(".main.sync") else { continue }
+            let context = i > 0 ? stripStrings(lines[i - 1]) + code : code
+            if context.contains("!Thread.isMainThread") { continue }
+            out.append(viol(filePath, i, lines))
+            if out.count >= maxViolations { break }
+        }
+        return out
+    }
+
+    static func checkBlockingMainThread(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        let blockingCalls = [
+            "String(contentsOfFile:", "String(contentsOf:",
+            "Data(contentsOf:", "NSData(contentsOf:", "NSData(contentsOfFile:",
+            "FileManager.default.contents(atPath:",
+            "sendSynchronousRequest",
+        ]
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            guard blockingCalls.contains(where: { code.contains($0) }) else { continue }
+            let window = lines[max(0, i - 3)..<min(lines.count, i + 1)].map { stripStrings($0) }.joined()
+            if window.contains("global()") || window.contains("background") ||
+               window.contains("async {") || window.contains("Task {") ||
+               window.contains("DispatchQueue.global") { continue }
+            out.append(viol(filePath, i, lines))
+            if out.count >= maxViolations { break }
+        }
+        return out
+    }
+}
+
+// MARK: - New MEDIUM Checks
+
+private extension AntipatternAnalyzer {
+
+    static func checkNSObjCBridgeTypes(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        let bridgeTypes = ["NSDate", "NSURL", "NSData"]
+        guard let pattern = try? NSRegularExpression(
+            pattern: #":\s*(NSDate|NSURL|NSData)\b"#
+        ) else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if isComment(line) { continue }
+            // Skip ObjC files
+            if filePath.hasSuffix(".m") || filePath.hasSuffix(".h") { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            if pattern.firstMatch(in: line, range: range) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        _ = bridgeTypes
+        return out
+    }
+
+    static func checkSelectorWithoutObjc(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        guard let selectorRe = try? NSRegularExpression(pattern: #"#selector\(\s*(\w+)"#) else { return [] }
+        let content = lines.joined(separator: "\n")
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if isComment(line) { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = selectorRe.firstMatch(in: line, range: range),
+                  let nameRange = Range(match.range(at: 1), in: line) else { continue }
+            let methodName = String(line[nameRange])
+            // Search the file for the method declaration and check for @objc
+            let declPattern = "func \(NSRegularExpression.escapedPattern(for: methodName))\\b"
+            guard let declRe = try? NSRegularExpression(pattern: declPattern) else { continue }
+            let fullRange = NSRange(content.startIndex..., in: content)
+            guard let declMatch = declRe.firstMatch(in: content, range: fullRange),
+                  let declSwiftRange = Range(declMatch.range, in: content) else { continue }
+            // Check a small window before the declaration for @objc / @IBAction / @IBOutlet
+            let start = content.index(declSwiftRange.lowerBound, offsetBy: -120, limitedBy: content.startIndex) ?? content.startIndex
+            let window = String(content[start..<declSwiftRange.lowerBound])
+            if window.contains("@objc") || window.contains("@IBAction") || window.contains("@IBOutlet") { continue }
+            out.append(viol(filePath, i, lines))
+            if out.count >= maxViolations { break }
+        }
+        return out
+    }
+
+    static func checkDeprecatedOpenURL(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            if stripStrings(line).contains("openURL(") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    static func checkMissingSuperCall(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        let lifecycleMethods: Set<String> = [
+            "viewDidLoad", "viewWillAppear", "viewDidAppear",
+            "viewWillDisappear", "viewDidDisappear", "viewWillLayoutSubviews",
+            "viewDidLayoutSubviews", "awakeFromNib", "prepareForReuse",
+        ]
+        guard let overrideRe = try? NSRegularExpression(
+            pattern: #"override\s+func\s+(\w+)"#
+        ) else { return [] }
+        var out: [APViolation] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("//") { i += 1; continue }
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = overrideRe.firstMatch(in: line, range: range),
+                  let nameRange = Range(match.range(at: 1), in: line) else { i += 1; continue }
+            let methodName = String(line[nameRange])
+            guard lifecycleMethods.contains(methodName) else { i += 1; continue }
+            // Scan the body (until matching closing brace) for super.methodName(
+            var depth = 0
+            var foundSuper = false
+            var j = i
+            while j < min(lines.count, i + 60) {
+                let bodyLine = lines[j]
+                depth += bodyLine.components(separatedBy: "{").count - 1
+                depth -= bodyLine.components(separatedBy: "}").count - 1
+                if bodyLine.contains("super.\(methodName)(") || bodyLine.contains("super.\(methodName) (") {
+                    foundSuper = true; break
+                }
+                if j > i && depth <= 0 { break }
+                j += 1
+            }
+            if !foundSuper {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+            i += 1
+        }
+        return out
+    }
+}
+
+// MARK: - New LOW Checks
+
+private extension AntipatternAnalyzer {
+
+    static func checkNSLogUsage(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        if lines.contains(where: { $0.contains("// LEGACY") }) { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            if stripStrings(line).contains("NSLog(") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    static func checkImageLiteral(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            if stripStrings(line).contains("#imageLiteral") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
 }
