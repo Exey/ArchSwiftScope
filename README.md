@@ -1,6 +1,6 @@
 # 🔬 ArchSwiftScope
 
-**Native macOS CLI tool for Swift codebase intelligence** — find critical files, generate dependency graphs, learning paths, and detailed reports.
+**Native macOS CLI tool for Swift codebase intelligence** — find critical files, generate dependency graphs, learning paths.
 
 Built 100% in Swift using Apple-native technologies. **Fully offline. No network required. No telemetry. No accounts.**
 
@@ -21,9 +21,7 @@ swift build -c release
 .build/release/codecontext analyze ~/path/to/your/project --open
 ```
 
-`--open` opens the HTML report in Safari.
-
-![Based on https://github.com/TelegramMessenger/Telegram-iOS](https://i.postimg.cc/BqgK0jPr/tg.png)
+![Based on https://github.com/TelegramMessenger/Telegram-iOS](https://i.postimg.cc/wgCrvx9N/Arch-Sw-ift-Scope-1680-2.png)
 
 ---
 
