@@ -408,7 +408,6 @@ private extension AntipatternAnalyzer {
               let selfRefPattern = try? NSRegularExpression(pattern: #"\bself\."#) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isComment(line) { continue }
             if line.contains("[weak self]") || line.contains("[unowned self]") { continue }
             let range = NSRange(line.startIndex..., in: line)
@@ -532,7 +531,6 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isComment(line) { continue }
             if line.contains("@IBOutlet") || line.contains("@IBAction") { continue }
             let range = NSRange(line.startIndex..., in: line)
@@ -700,7 +698,6 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isComment(line) { continue }
             // Skip ObjC files
             if filePath.hasSuffix(".m") || filePath.hasSuffix(".h") { continue }
@@ -719,7 +716,6 @@ private extension AntipatternAnalyzer {
         let content = lines.joined(separator: "\n")
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isComment(line) { continue }
             let range = NSRange(line.startIndex..., in: line)
             guard let match = selectorRe.firstMatch(in: line, range: range),
