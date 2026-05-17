@@ -341,12 +341,6 @@ struct ReportGenerator {
         let metalPackages = Set(metadata.metalFiles.compactMap { $0.packageName.isEmpty ? nil : $0.packageName })
 
         // ─── Architecture ───
-        let appleFrameworksCount = classifiedImports[.apple]?.count ?? 0
-        let appleFrameworksHTML: String = {
-            guard let names = classifiedImports[.apple], !names.isEmpty else { return "" }
-            return names.sorted().map { "<span class='tag tag-apple'>\($0)</span>" }.joined(separator: " ")
-        }()
-
         let externalLibsCount = classifiedImports[.external]?.count ?? 0
         let externalLibsHTML: String = {
             guard let extNames = classifiedImports[.external], !extNames.isEmpty else { return "" }
@@ -386,13 +380,23 @@ struct ReportGenerator {
 
         // Architecture COMPONENTS — detect from Apple frameworks used
         let usedAppleFrameworks = classifiedImports[.apple] ?? []
+        let detectedComponents = detectComponents(appleFrameworks: usedAppleFrameworks)
+        // Every framework name claimed by a detected component — excluded from the raw list below
+        let componentCoveredFrameworks: Set<String> = detectedComponents.reduce(into: []) { $0.formUnion($1.frameworks) }
         let componentsHTML: String = {
-            let components = detectComponents(appleFrameworks: usedAppleFrameworks)
-            guard !components.isEmpty else { return "" }
-            let items = components.map { c -> String in
+            guard !detectedComponents.isEmpty else { return "" }
+            let items = detectedComponents.map { c -> String in
                 "<div class='component-item'><span class='component-icon'>\(c.icon)</span><div><div class='component-name'>\(esc(c.name))</div><div class='component-detail'>\(esc(c.detail))</div></div></div>"
             }.joined(separator: "\n")
             return "<div class='component-grid'>\(items)</div>"
+        }()
+
+        // Apple Frameworks — exclude any already shown in Components
+        let filteredAppleFrameworks = usedAppleFrameworks.subtracting(componentCoveredFrameworks)
+        let appleFrameworksCount = filteredAppleFrameworks.count
+        let appleFrameworksHTML: String = {
+            guard !filteredAppleFrameworks.isEmpty else { return "" }
+            return filteredAppleFrameworks.sorted().map { "<span class='tag tag-apple'>\($0)</span>" }.joined(separator: " ")
         }()
 
         // ─── Anti-patterns ───
@@ -482,13 +486,10 @@ struct ReportGenerator {
                 }
                 h += "</div>"
             }
-            // Non-conventional samples
+            // Non-conventional samples — one-liner joined by " / "
             if !semanticStats.samples.isEmpty {
-                h += "<div class='sem-samples'><span style='color:var(--text3);font-size:11px;font-weight:600'>Non-standard samples:</span>"
-                for s in semanticStats.samples {
-                    h += "<div class='sem-sample'>\(esc(s))</div>"
-                }
-                h += "</div>"
+                let joined = semanticStats.samples.map { esc($0) }.joined(separator: " /&nbsp;")
+                h += "<div class='sem-samples'><span style='color:var(--text3);font-size:11px;font-weight:600'>Non-standard samples:</span><div class='sem-sample'>\(joined)</div></div>"
             }
             return h
         }()
@@ -577,7 +578,7 @@ struct ReportGenerator {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>📐 Layers</h3>\(layersHTML)</div>"
             }
             if !componentsHTML.isEmpty {
-                h += "<div class='sub-card'><h3 class='sub-card-title'>🧩 Components <span class='count'>(\(detectComponents(appleFrameworks: usedAppleFrameworks).count))</span></h3>\(componentsHTML)</div>"
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🧩 Components <span class='count'>(\(detectedComponents.count))</span></h3>\(componentsHTML)</div>"
             }
             if !appleFrameworksHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🍎 Apple Frameworks <span class='count'>(\(appleFrameworksCount))</span></h3><div class='tag-cloud'>\(appleFrameworksHTML)</div></div>"
@@ -843,7 +844,7 @@ struct ReportGenerator {
                 .container { max-width: 1280px; margin: 0 auto; }
                 .card { background: var(--card); padding: 28px; border-radius: 16px; box-shadow: 0 1px 12px rgba(0,0,0,0.06); margin-bottom: 20px; }
                 h1 { font-size: 28px; font-weight: 700; margin: 0 0 4px 0; }
-                h2 { color: var(--text2); font-size: 20px; border-bottom: 2px solid var(--border); padding-bottom: 10px; margin: 28px 0 16px 0; }
+                h2 { color: var(--text2); font-size: 20px; border-bottom: 2px solid var(--border); padding-bottom: 10px; margin: 0 0 16px 0; }
                 h3 { color: var(--text2); font-size: 16px; margin: 20px 0 8px 0; }
                 .subtitle { color: var(--text3); font-size: 14px; margin-bottom: 20px; }
                 .branch-badge { display: inline-block; background: #e3f2fd; color: #1565c0; padding: 2px 10px; border-radius: 8px; font-size: 13px; font-weight: 500; font-family: 'SF Mono', Menlo, monospace; }
@@ -977,7 +978,6 @@ struct ReportGenerator {
                     <div class="summary-card"><div class="num">\(totalExts)</div><div class="label">Extensions</div></div>
                     <div class="summary-card"><div class="num">\(packages.count)</div><div class="label">Packages</div></div>
                     \(!monkeyPatchedLibs.isEmpty ? "<div class=\"summary-card\"><div class=\"num\">\(monkeyPatchedLibs.count)</div><div class=\"label\">🐒 Vendored Libs</div></div>" : "")
-                    \(totalTodos + totalFixmes > 0 ? "<div class=\"summary-card\"><div class=\"num\">\(totalTodos + totalFixmes)</div><div class=\"label\">TODO/FIXME</div></div>" : "")
                     <div class="summary-card"><div class="num">\(totalStructs)</div><div class="label">🟢 Structs</div></div>
                     <div class="summary-card"><div class="num">\(totalClasses)</div><div class="label">🔵 Classes</div></div>
                     <div class="summary-card"><div class="num">\(totalEnums)</div><div class="label">🟡 Enums</div></div>
@@ -1289,7 +1289,7 @@ struct ReportGenerator {
         return "Core"
     }
 
-    private func detectComponents(appleFrameworks: Set<String>) -> [(name: String, detail: String, icon: String)] {
+    private func detectComponents(appleFrameworks: Set<String>) -> [(name: String, detail: String, icon: String, frameworks: Set<String>)] {
         let checks: [(frameworks: Set<String>, name: String, detail: String, icon: String)] = [
             (["SwiftUI"], "SwiftUI", "Declarative UI", "🎨"),
             (["UIKit"], "UIKit", "Imperative UI", "📱"),
@@ -1327,7 +1327,8 @@ struct ReportGenerator {
             (["Observation"], "Observation", "Swift Observation", "👀"),
         ]
         return checks.compactMap { check in
-            check.frameworks.isDisjoint(with: appleFrameworks) ? nil : (name: check.name, detail: check.detail, icon: check.icon)
+            let matched = check.frameworks.intersection(appleFrameworks)
+            return matched.isEmpty ? nil : (name: check.name, detail: check.detail, icon: check.icon, frameworks: matched)
         }
     }
 }
