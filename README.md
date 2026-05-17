@@ -61,7 +61,7 @@ The generated HTML report is a single self-contained file — open it anywhere, 
 
 4. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
-5. **⚠️ Anti-patterns** — 20 static checks across HIGH / MEDIUM / LOW priorities, each with violation count, file location, and code snippet. Checks include force unwrap, retain cycles, hardcoded secrets, missing `final`, empty `catch`, IUOs, and more
+5. **⚠️ Anti-patterns** — 20+ static checks across HIGH / MEDIUM / LOW priorities, each with violation count, file location, and code snippet. Checks include force unwrap, retain cycles, hardcoded secrets, missing `final`, empty `catch`, IUOs, and more
 
 6. **🎨 Assets** — media resource analysis showing total size, file count by type, and top 3 heaviest files per type
 
