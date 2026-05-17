@@ -33,27 +33,52 @@ struct APResult {
 // MARK: - Analyzer
 
 struct AntipatternAnalyzer {
-    static let maxViolations = 10
+    static let maxViolations = 100
 
     static func run(files: [ParsedFile], repoPath: String = "") -> [APResult] {
-        let checks = allChecks()
-        var results = checks.map { APResult(check: $0, violations: []) }
-
-        for file in files {
-            guard file.filePath.hasSuffix(".swift") else { continue }
-            guard let content = try? String(contentsOfFile: file.filePath, encoding: .utf8) else { continue }
-            let lines = content.components(separatedBy: "\n")
-
-            for i in 0..<checks.count {
-                let vs = checks[i].detect(file.filePath, lines)
-                guard !vs.isEmpty else { continue }
-                var combined = results[i].violations + vs
-                if combined.count > maxViolations { combined = Array(combined.prefix(maxViolations)) }
-                results[i] = APResult(check: results[i].check, violations: combined)
+        // Collect class names declared in the project — used by the inheritance check
+        var projectClassNames = Set<String>()
+        for file in files where file.filePath.hasSuffix(".swift") {
+            for decl in file.declarations where decl.kind == .class {
+                projectClassNames.insert(decl.name)
             }
         }
 
-        // Enrich violations with blame authors
+        let checks = allChecks(projectClasses: projectClassNames)
+        let swiftFiles = files.filter { $0.filePath.hasSuffix(".swift") }
+
+        // Per-check violation buckets; filled concurrently, merged under a lock
+        var violationsPerCheck: [[APViolation]] = Array(repeating: [], count: checks.count)
+        let lock = NSLock()
+
+        // Parallel file I/O: each iteration reads one file and runs all checks on it
+        DispatchQueue.concurrentPerform(iterations: swiftFiles.count) { idx in
+            let filePath = swiftFiles[idx].filePath
+            guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return }
+            let lines = content.components(separatedBy: "\n")
+
+            var local: [(Int, [APViolation])] = []
+            for i in checks.indices {
+                let vs = checks[i].detect(filePath, lines)
+                if !vs.isEmpty { local.append((i, vs)) }
+            }
+            guard !local.isEmpty else { return }
+
+            lock.lock()
+            for (i, vs) in local {
+                let have = violationsPerCheck[i].count
+                if have < maxViolations {
+                    violationsPerCheck[i].append(contentsOf: vs.prefix(maxViolations - have))
+                }
+            }
+            lock.unlock()
+        }
+
+        var results = checks.indices.map { i in
+            APResult(check: checks[i], violations: violationsPerCheck[i])
+        }
+
+        // Enrich violations with blame authors (sequential — git blame is already fast per-file)
         if !repoPath.isEmpty {
             let git = GitAnalyzer(repoPath: repoPath, commitLimit: 0)
             var blameCache: [String: [Int: String]] = [:]
@@ -93,7 +118,7 @@ struct AntipatternAnalyzer {
 // MARK: - Check Registry
 
 private extension AntipatternAnalyzer {
-    static func allChecks() -> [APCheck] {
+    static func allChecks(projectClasses: Set<String> = []) -> [APCheck] {
         [
             // ─── HIGH ───────────────────────────────────────────────────────
             APCheck(
@@ -141,12 +166,6 @@ private extension AntipatternAnalyzer {
 
             // ─── MEDIUM ─────────────────────────────────────────────────────
             APCheck(
-                name: "Prefer let Over var",
-                description: "Immutability reduces bugs, makes code easier to reason about, and allows the compiler to optimize. Declare with `var` only when mutation is actually required. If a value is assigned once and never changed, use `let` — the compiler will tell you when `var` is truly needed.",
-                priority: .medium,
-                detect: checkPreferLet
-            ),
-            APCheck(
                 name: "Mark Classes final Unless Subclassing Is Designed",
                 description: "`final` disables dynamic dispatch, enabling the compiler to devirtualize and inline calls. It also signals that the class is not designed for inheritance. Add `final` unless subclassing is part of the deliberate public API or you are inheriting from a framework class.",
                 priority: .medium,
@@ -162,7 +181,7 @@ private extension AntipatternAnalyzer {
                 name: "Prefer Protocols Over Class Inheritance",
                 description: "Deep class hierarchies create tight coupling, make testing harder, and resist change. Favor protocol-oriented design: compose behaviors through protocol conformances and extensions. Reserve class inheritance for cases where the parent is a framework type and subclassing is the documented integration point.",
                 priority: .medium,
-                detect: checkProtocolsOverInheritance
+                detect: { filePath, lines in checkProtocolsOverInheritance(filePath, lines, projectClasses: projectClasses) }
             ),
             APCheck(
                 name: "Prefer Structs Over Classes for Value Types",
@@ -267,6 +286,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
@@ -350,46 +370,6 @@ private extension AntipatternAnalyzer {
 
 private extension AntipatternAnalyzer {
 
-    static func checkPreferLet(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        guard let varDeclRe = try? NSRegularExpression(
-            pattern: #"^\s{4,}var\s+(\w+)\s*(?::[^=]+)?\s*="#
-        ) else { return [] }
-        var out: [APViolation] = []
-        var braceDepth = 0
-        for (i, line) in lines.enumerated() {
-            braceDepth += line.components(separatedBy: "{").count - 1
-            braceDepth -= line.components(separatedBy: "}").count - 1
-            braceDepth = max(0, braceDepth)
-            guard braceDepth >= 2 else { continue }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("//") || trimmed.hasPrefix("@") { continue }
-            let lineRange = NSRange(line.startIndex..., in: line)
-            guard let match = varDeclRe.firstMatch(in: line, range: lineRange),
-                  let nameRange = Range(match.range(at: 1), in: line) else { continue }
-            let varName = String(line[nameRange])
-            guard varName != "_" && !varName.isEmpty else { continue }
-            var mutated = false
-            var depth = braceDepth
-            for j in (i + 1)..<min(lines.count, i + 40) {
-                let next = lines[j]
-                depth += next.components(separatedBy: "{").count - 1
-                depth -= next.components(separatedBy: "}").count - 1
-                if depth < braceDepth { break }
-                let mutPat = "\\b\(NSRegularExpression.escapedPattern(for: varName))\\s*[+\\-*/%&|^]?=(?!=)"
-                if let mutRe = try? NSRegularExpression(pattern: mutPat) {
-                    let r = NSRange(next.startIndex..., in: next)
-                    if mutRe.firstMatch(in: next, range: r) != nil { mutated = true; break }
-                }
-                if next.contains("&\(varName)") { mutated = true; break }
-            }
-            if !mutated {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
-            }
-        }
-        return out
-    }
-
     static func checkMissingFinal(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
         guard let pattern = try? NSRegularExpression(
@@ -414,6 +394,7 @@ private extension AntipatternAnalyzer {
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
@@ -423,20 +404,10 @@ private extension AntipatternAnalyzer {
         return out
     }
 
-    static func checkProtocolsOverInheritance(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        let frameworkPrefixes = ["NS", "UI", "SK", "SC", "CG", "CA", "AV", "MK", "HK", "WK", "XC", "PH", "SN", "CL", "AR"]
-        let frameworkBases: Set<String> = [
-            "NSObject", "UIViewController", "UIView", "UITableViewCell", "UICollectionViewCell",
-            "UITableViewController", "UICollectionViewController", "UIControl",
-            "NSViewController", "NSView", "NSWindowController", "NSTableCellView",
-            "Operation", "SKNode", "SCNNode", "UINavigationController",
-            "UITabBarController", "UISplitViewController", "UIPageViewController",
-            "UIScrollView", "UITableView", "UICollectionView", "UIStackView",
-            "UILabel", "UITextField", "UITextView", "UIImageView",
-            "XCTestCase", "XCTest", "ObservableObject",
-        ]
+    static func checkProtocolsOverInheritance(_ filePath: String, _ lines: [String], projectClasses: Set<String>) -> [APViolation] {
+        guard !projectClasses.isEmpty else { return [] }
         guard let pattern = try? NSRegularExpression(
-            pattern: #"^\s*(?:final\s+)?(?:\w+\s+)?class\s+\w+\s*:\s*(\w+)"#
+            pattern: #"^\s*(?:final\s+)?(?:\w+\s+)*class\s+\w+\s*:\s*(\w+)"#
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
@@ -445,8 +416,8 @@ private extension AntipatternAnalyzer {
             guard let match = pattern.firstMatch(in: line, range: range),
                   let baseRange = Range(match.range(at: 1), in: line) else { continue }
             let base = String(line[baseRange])
-            if frameworkBases.contains(base) { continue }
-            if frameworkPrefixes.contains(where: { base.hasPrefix($0) }) { continue }
+            // Only flag when the parent class is defined within the project itself
+            guard projectClasses.contains(base) else { continue }
             out.append(viol(filePath, i, lines))
             if out.count >= maxViolations { break }
         }
@@ -533,10 +504,14 @@ private extension AntipatternAnalyzer {
 private extension AntipatternAnalyzer {
 
     static func checkToggle(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        guard let pattern = try? NSRegularExpression(pattern: #"(\w+)\s*=\s*!\s*\1\b"#) else { return [] }
+        // Anchored: must be a standalone statement, not inside a string or comment
+        guard let pattern = try? NSRegularExpression(
+            pattern: #"^\s*(?:self\.)?(\w[\w.]*)\s*=\s*!\s*\1\s*$"#
+        ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("//") || trimmed.hasPrefix("*") { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))

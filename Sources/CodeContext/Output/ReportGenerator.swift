@@ -223,7 +223,8 @@ struct ReportGenerator {
         branchStats: BranchStats = BranchStats(),
         semanticStats: SemanticStats = SemanticStats(),
         churnFiles: [FileChurnStat] = [],
-        repoPath: String = ""
+        repoPath: String = "",
+        apResults: [APResult] = []
     ) throws {
         // Filter out monkey-patched library files
         let mpLibPaths = monkeyPatchedLibs.map(\.path)
@@ -269,7 +270,11 @@ struct ReportGenerator {
                     return "<a href='#pkg-\(anchor)' class='tag tag-local pkg-link-inline' style='font-size:11px'>\(esc(mod.key))</a>"
                 }
                 .joined(separator: " ")
-            return "<tr><td>\(esc(name))</td><td>\(info.filesModified)</td><td>\(info.totalCommits)</td><td>\(first)</td><td>\(last)</td><td>\(modules)</td></tr>"
+            let loc = info.totalLOCAdded > 0 ? info.totalLOCAdded.formatted() : "—"
+            let locPerCommit = info.totalCommits > 0 && info.totalLOCAdded > 0
+                ? (info.totalLOCAdded / info.totalCommits).formatted()
+                : "—"
+            return "<tr><td>\(esc(name))</td><td>\(info.filesModified)</td><td>\(info.totalCommits)</td><td>\(loc)</td><td>\(locPerCommit)</td><td>\(first)</td><td>\(last)</td><td>\(modules)</td></tr>"
         }.joined(separator: "\n")
 
         // ─── 2. Imports ───
@@ -392,8 +397,10 @@ struct ReportGenerator {
 
         // ─── Anti-patterns ───
         print("   Running anti-pattern checks...")
-        let apResults = AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
-        let apCardHTML = buildAntipatternHTML(apResults)
+        let resolvedAPResults = apResults.isEmpty
+            ? AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
+            : apResults
+        let apCardHTML = buildAntipatternHTML(resolvedAPResults)
 
         // ─── Pre-computed card HTML strings ───
 
@@ -531,6 +538,38 @@ struct ReportGenerator {
             return content
         }()
 
+        // ── Architecture-level inter-package graph ──────────────────────────
+        let fileToPackage: [String: String] = Dictionary(
+            projectFiles.map { ($0.filePath, $0.packageName.isEmpty ? "App" : $0.packageName) },
+            uniquingKeysWith: { $1 }
+        )
+        struct ArchNode: Encodable { let id: String; let label: String; let val: Int }
+        struct ArchLink: Encodable { let source: String; let target: String }
+        struct ArchGraphData: Encodable { let nodes: [ArchNode]; let links: [ArchLink] }
+
+        var archFileCount: [String: Int] = [:]
+        for file in projectFiles {
+            let pkg = file.packageName.isEmpty ? "App" : file.packageName
+            archFileCount[pkg, default: 0] += 1
+        }
+        var archEdgeSeen = Set<String>()
+        var archLinks: [ArchLink] = []
+        for edge in graph.edges {
+            let src = fileToPackage[edge.source] ?? "App"
+            let tgt = fileToPackage[edge.target] ?? "App"
+            guard src != tgt else { continue }
+            let key = "\(src)→\(tgt)"
+            if archEdgeSeen.insert(key).inserted {
+                archLinks.append(ArchLink(source: src, target: tgt))
+            }
+        }
+        let archNodes = archFileCount.map { ArchNode(id: $0.key, label: $0.key, val: $0.value) }
+            .sorted { $0.val > $1.val }
+        let archGraphJSON = (try? String(data: JSONEncoder().encode(
+            ArchGraphData(nodes: archNodes, links: archLinks)
+        ), encoding: .utf8)) ?? "{\"nodes\":[],\"links\":[]}"
+        let showArchGraph = archNodes.count >= 2
+
         // Architecture card
         let architectureCardHTML: String = {
             var h = "<h2>🏛️ Architecture</h2>"
@@ -545,6 +584,9 @@ struct ReportGenerator {
             }
             if !externalLibsHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>📦 External Libraries <span class='count'>(\(externalLibsCount))</span></h3><div class='tag-cloud'>\(externalLibsHTML)</div></div>"
+            }
+            if showArchGraph {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🗺️ Architecture Graph</h3><div id='arch-graph' class='arch-graph-container'></div></div>"
             }
             if !localPackagesSubCardHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
@@ -682,7 +724,49 @@ struct ReportGenerator {
             }
         }
 
+        // Arch-level graph script (appended after per-package scripts)
+        if showArchGraph {
+            packageGraphScripts += """
+            {
+                const d = \(archGraphJSON);
+                const el = document.getElementById('arch-graph');
+                if (d.nodes.length > 0 && el) {
+                    const g = ForceGraph()(el)
+                        .graphData(d)
+                        .nodeLabel(n => n.label + ' (' + n.val + ' files)')
+                        .nodeVal(n => Math.max(n.val * 2, 4))
+                        .nodeColor(() => '#007aff')
+                        .nodeCanvasObject((node, ctx, gs) => {
+                            const r = Math.max(Math.sqrt(Math.max(node.val * 2, 4)) * 1.2, 4);
+                            ctx.beginPath();
+                            ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
+                            ctx.fillStyle = '#007aff';
+                            ctx.fill();
+                            if (gs > 0.4) {
+                                ctx.font = `${Math.max(11/gs, 3)}px -apple-system, sans-serif`;
+                                ctx.textAlign = 'center';
+                                ctx.fillStyle = '#333';
+                                ctx.fillText(node.label, node.x, node.y + r + 12/gs);
+                            }
+                        })
+                        .linkDirectionalArrowLength(8)
+                        .linkDirectionalArrowRelPos(1)
+                        .linkColor(() => 'rgba(0,0,0,0.15)')
+                        .width(el.offsetWidth)
+                        .height(500);
+                    g.d3Force('charge').strength(-300);
+                    g.d3Force('link').distance(120);
+                }
+            }
+
+            """
+        }
+
         // ─── 4. Hotspots ───
+        // In-degree = number of other files that import / reference this file
+        var inDegree: [String: Int] = [:]
+        for edge in graph.edges { inDegree[edge.target, default: 0] += 1 }
+
         let hotspotRows = hotspots.map { item -> String in
             let file = fileMap[item.path]
             let fileName = URL(fileURLWithPath: item.path).lastPathComponent
@@ -690,10 +774,10 @@ struct ReportGenerator {
             let pkgAnchor = pkg.replacingOccurrences(of: " ", with: "-")
             let lineCount = file?.lineCount ?? 0
             let declCount = file?.declarations.filter { $0.kind != .extension && !Declaration.invalidNames.contains($0.name) }.count ?? 0
-            // Extract folder path (everything before the filename)
             let pathComps = item.path.components(separatedBy: "/")
             let folderPath = pathComps.count >= 2 ? pathComps.dropLast().suffix(3).joined(separator: "/") + "/" : ""
-            return "<tr><td><span style='color:var(--text3)'>\(esc(folderPath))</span><strong>\(esc(fileName))</strong></td><td class='mono'>\(String(format: "%.4f", item.score))</td><td class='mono'>\(lineCount)</td><td class='mono'>\(declCount)</td><td><a href='#pkg-\(pkgAnchor)' class='tag tag-local pkg-link-inline' style='font-size:11px'>\(esc(pkg))</a></td></tr>"
+            let uses = inDegree[item.path] ?? 0
+            return "<tr><td><span style='color:var(--text3)'>\(esc(folderPath))</span><strong>\(esc(fileName))</strong></td><td class='mono'>\(uses)</td><td class='mono'>\(lineCount)</td><td class='mono'>\(declCount)</td><td><a href='#pkg-\(pkgAnchor)' class='tag tag-local pkg-link-inline' style='font-size:11px'>\(esc(pkg))</a></td></tr>"
         }.joined(separator: "\n")
 
         // ─── 5. Summary ───
@@ -800,6 +884,7 @@ struct ReportGenerator {
                 .file-desc { color: var(--text3); font-size: 12px; font-style: italic; margin-top: 2px; }
                 .decl-tags { font-size: 12px; line-height: 1.8; }
                 .pkg-graph-container { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: #fafafa; }
+                .arch-graph-container { width: 100%; height: 500px; border-radius: 8px; overflow: hidden; background: #fafafa; }
                 .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
                 .sub-card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
                 .sub-card:last-child { margin-bottom: 0; }
@@ -907,7 +992,7 @@ struct ReportGenerator {
                 <div class="sub-card">
                     <h3 class="sub-card-title">👥 Team Contribution Map</h3>
                     <div class="table-wrap"><table class="team-table">
-                        <thead><tr><th>Developer</th><th>Files Modified</th><th>Commits</th><th>First Change</th><th>Last Change</th><th>Top-3 Modules</th></tr></thead>
+                        <thead><tr><th>Developer</th><th>Files</th><th>Commits</th><th>LOC</th><th>LOC/Commit</th><th>First Change</th><th>Last Change</th><th>Top-3 Modules</th></tr></thead>
                         <tbody>\(teamRows)</tbody>
                     </table></div>
                 </div>
@@ -978,9 +1063,9 @@ struct ReportGenerator {
             }() : "")
             <div class="card">
                 <h2>🔥 Hot Zones</h2>
-                <p class="subtitle">Files with the highest dependency score (PageRank). These are the most interconnected files in the codebase.</p>
+                <p class="subtitle">Files imported or referenced by the most other files — the highest-leverage nodes in the codebase.</p>
                 <div class="table-wrap"><table class="file-table">
-                    <thead><tr><th>File</th><th>Score</th><th>Lines</th><th>Decl</th><th>Package</th></tr></thead>
+                    <thead><tr><th>File</th><th>Uses</th><th>Lines</th><th>Decl</th><th>Package</th></tr></thead>
                     <tbody>\(hotspotRows)</tbody>
                 </table></div>
             </div>
@@ -1163,7 +1248,10 @@ struct ReportGenerator {
                 html += "<div class=\"ap-check\">"
                 html += "<div class=\"ap-check-header\">\(apPriBadge(r.check.priority))<span class=\"ap-lang-badge\">SWIFT</span>"
                 html += "<span class=\"ap-check-title\">\(esc(r.check.name))</span>"
-                html += "<span class=\"ap-check-count\">\(r.violations.count) violations</span></div>"
+                let badge = r.violations.count >= AntipatternAnalyzer.maxViolations
+                    ? "\(r.violations.count) (first \(AntipatternAnalyzer.maxViolations))"
+                    : "\(r.violations.count) violations"
+                html += "<span class=\"ap-check-count\">\(badge)</span></div>"
                 html += "<div class=\"ap-violations\">"
                 html += "<div class=\"ap-check-desc\">\(esc(r.check.description))</div>"
                 for v in r.violations {

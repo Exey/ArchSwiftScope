@@ -7,6 +7,7 @@ struct AuthorStats {
     var displayName: String = ""
     var filesModified: Int = 0
     var totalCommits: Int = 0
+    var totalLOCAdded: Int = 0
     var firstCommitDate: TimeInterval = 0
     var lastCommitDate: TimeInterval = 0
 }
@@ -75,12 +76,9 @@ struct GitAnalyzer {
         return output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
     }
 
-    /// Global author stats from a single git log call. Keyed by email to merge aliases.
+    /// Global author stats. Commit/date info from one git log call; LOC from a second --numstat pass.
     func authorStats() -> [String: AuthorStats] {
-        let output = git([
-            "log", "--pretty=format:%ae\t%an\t%at", "-\(commitLimit)"
-        ])
-        guard let output = output else { return [:] }
+        guard let output = git(["log", "--pretty=format:%ae\t%an\t%at", "-\(commitLimit)"]) else { return [:] }
         var stats: [String: AuthorStats] = [:]
         for line in output.split(separator: "\n") {
             let parts = line.split(separator: "\t", maxSplits: 2)
@@ -92,10 +90,21 @@ struct GitAnalyzer {
             var s = stats[email, default: AuthorStats()]
             s.totalCommits += 1
             if s.firstCommitDate == 0 || ts < s.firstCommitDate { s.firstCommitDate = ts }
-            // Keep the most recent name as display name
             if ts > s.lastCommitDate { s.lastCommitDate = ts; s.displayName = name }
             if s.displayName.isEmpty { s.displayName = name }
             stats[email] = s
+        }
+
+        // LOC added per author via numstat (second pass — separate git call)
+        if let numstat = git(["log", "-\(commitLimit)", "--pretty=format:__AUTHOR__%n%ae", "--numstat"]) {
+            var currentEmail = ""
+            for line in numstat.components(separatedBy: "\n") {
+                if line == "__AUTHOR__" { currentEmail = ""; continue }
+                if currentEmail.isEmpty { currentEmail = line.trimmingCharacters(in: .whitespaces); continue }
+                let cols = line.split(separator: "\t")
+                guard cols.count >= 2, let added = Int(cols[0]) else { continue }
+                stats[currentEmail]?.totalLOCAdded += added
+            }
         }
         return stats
     }

@@ -66,6 +66,33 @@ struct AnalyzeCommand: AsyncParsableCommand {
             print("\(prefix) \(fileName) (\(String(format: "%.4f", item.score)))")
         }
 
+        // Anti-pattern checks (parallel file I/O)
+        let mpPaths = result.monkeyPatchedLibs.map(\.path)
+        let projectFiles = enrichedFiles.filter { f in
+            !mpPaths.contains { f.filePath.contains("/\($0)/") }
+        }
+        let swiftFileCount = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
+        let repoPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        print("\n⚠️  Anti-pattern checks · \(swiftFileCount) Swift files")
+        let apResults = AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
+
+        let priLabel: (APPriority) -> String = {
+            switch $0 { case .high: "HIGH"; case .medium: "MED "; case .low: "LOW " }
+        }
+        for pri in [APPriority.high, .medium, .low] {
+            for r in apResults where r.check.priority == pri {
+                let icon = r.passed ? "✓" : "✗"
+                let name = r.check.name
+                let truncated = name.count > 44 ? String(name.prefix(43)) + "…" : name
+                let padded = truncated.padding(toLength: 44, withPad: " ", startingAt: 0)
+                let count = r.passed ? "—" : "\(r.violations.count)"
+                print("   \(icon) \(priLabel(pri))  \(padded)  \(count)")
+            }
+        }
+        let failed = apResults.filter { !$0.passed }.count
+        let passed = apResults.filter { $0.passed }.count
+        print("   \(failed) failed · \(passed) passed")
+
         // Generate report
         print("\n📊 Generating report...")
         let outputDir = "output"
@@ -85,7 +112,8 @@ struct AnalyzeCommand: AsyncParsableCommand {
             branchStats: result.branchStats,
             semanticStats: result.semanticStats,
             churnFiles: result.churnFiles,
-            repoPath: URL(fileURLWithPath: path).standardizedFileURL.path
+            repoPath: repoPath,
+            apResults: apResults
         )
 
         let reportURL = URL(fileURLWithPath: reportPath).standardizedFileURL
