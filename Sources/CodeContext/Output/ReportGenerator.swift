@@ -792,10 +792,6 @@ struct ReportGenerator {
         let totalProtocols = allDecls.filter { $0.kind == .protocol }.count
         let totalActors = allDecls.filter { $0.kind == .actor }.count
 
-        // TODO/FIXME
-        let totalTodos = projectFiles.reduce(0) { $0 + $1.todoCount }
-        let totalFixmes = projectFiles.reduce(0) { $0 + $1.fixmeCount }
-
         // Module TODO/FIXME stats
         var moduleTodos: [String: Int] = [:]
         var moduleFixmes: [String: Int] = [:]
