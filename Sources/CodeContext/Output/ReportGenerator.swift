@@ -397,19 +397,39 @@ struct ReportGenerator {
 
         // ─── Pre-computed card HTML strings ───
 
-        // Git: Branch Management (goscope bm-grid style)
+        // Git: Branch Management
         let branchSubCard: String = {
             guard branchStats.total > 0 else { return "" }
+
+            func fmt1(_ v: Double) -> String { String(format: "%.1f", v) }
+
+            let rollbackRate: String = {
+                guard branchStats.totalMainCommits > 0 else { return "0%" }
+                let pct = Double(branchStats.rollbackCount) / Double(branchStats.totalMainCommits) * 100
+                return "\(fmt1(pct))%"
+            }()
+
             var h = "<div class='bm-grid'>"
-            h += "<div class='bm-card'><div class='bm-value'>\(branchStats.total)</div><div class='bm-label'>Total Branches</div></div>"
-            h += "<div class='bm-card'><div class='bm-value'>\(branchStats.local)</div><div class='bm-label'>Local</div></div>"
-            if branchStats.remote > 0 { h += "<div class='bm-card'><div class='bm-value'>\(branchStats.remote)</div><div class='bm-label'>Remote</div></div>" }
-            if branchStats.stale > 0 { h += "<div class='bm-card'><div class='bm-value' style='color:var(--red)'>\(branchStats.stale)</div><div class='bm-label'>Stale (&gt;90d)</div></div>" }
-            if branchStats.merged > 0 { h += "<div class='bm-card'><div class='bm-value' style='color:#34c759'>\(branchStats.merged)</div><div class='bm-label'>Merged</div></div>" }
-            if branchStats.rollbackCount > 0 { h += "<div class='bm-card'><div class='bm-value' style='color:var(--red)'>\(branchStats.rollbackCount)</div><div class='bm-label'>Reverts</div></div>" }
-            if !branchStats.peakCommitDay.isEmpty { h += "<div class='bm-card'><div class='bm-value' style='font-size:16px'>\(esc(branchStats.peakCommitDay))</div><div class='bm-label'>Peak Day</div></div>" }
-            if branchStats.maxDepth > 1 { h += "<div class='bm-card'><div class='bm-value'>\(branchStats.maxDepth)</div><div class='bm-label'>Max Depth</div></div>" }
+            if branchStats.avgLifetimeDays > 0 {
+                h += "<div class='bm-card'><div class='bm-value'>\(fmt1(branchStats.avgLifetimeDays)) days</div><div class='bm-label'>Avg Branch Lifetime</div></div>"
+            }
+            if branchStats.avgTTMDays > 0 {
+                h += "<div class='bm-card'><div class='bm-value'>\(fmt1(branchStats.avgTTMDays)) days</div><div class='bm-label'>Avg Time to Merge</div></div>"
+            }
+            if branchStats.avgIntegDelayHours > 0 {
+                h += "<div class='bm-card'><div class='bm-value'>\(fmt1(branchStats.avgIntegDelayHours))h</div><div class='bm-label'>Integration Delay</div></div>"
+            }
+            h += "<div class='bm-card'><div class='bm-value'>\(branchStats.maxDepth)</div><div class='bm-label'>Branch Depth</div></div>"
+            h += "<div class='bm-card'><div class='bm-value'>\(rollbackRate)</div><div class='bm-label'>Rollback Rate</div></div>"
+            if !branchStats.peakCommitDay.isEmpty {
+                h += "<div class='bm-card'><div class='bm-value' style='font-size:16px'>\(esc(branchStats.peakCommitDay))</div><div class='bm-label'>Peak Commit Day</div></div>"
+            }
             h += "</div>"
+
+            if branchStats.rollbackCount > 0 {
+                h += "<p style='font-size:12px;color:var(--text3);margin:0 0 12px'>\(branchStats.rollbackCount) revert/rollback commits out of \(branchStats.totalMainCommits) on main.</p>"
+            }
+
             if !branchStats.staleBranches.isEmpty {
                 let rows = branchStats.staleBranches.map { b -> String in
                     "<tr><td class='mono' style='font-size:12px'>\(esc(b.name))</td><td class='mono' style='color:var(--red)'>\(b.daysInactive)d</td></tr>"

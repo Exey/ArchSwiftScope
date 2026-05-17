@@ -27,6 +27,10 @@ struct BranchStats {
     var maxDepth: Int = 0
     var peakCommitDay: String = ""
     var rollbackCount: Int = 0
+    var totalMainCommits: Int = 0
+    var avgLifetimeDays: Double = 0   // first commit → last commit on feature branch
+    var avgTTMDays: Double = 0        // first commit on feature branch → merge
+    var avgIntegDelayHours: Double = 0 // last commit on feature branch → merge
     var staleBranches: [StaleBranchInfo] = []
 }
 
@@ -100,8 +104,10 @@ struct GitAnalyzer {
         var stats = BranchStats()
         let now = Date().timeIntervalSince1970
         let staleThreshold: TimeInterval = 90 * 24 * 3600
+        let protected: Set<String> = ["main", "master", "develop", "development", "HEAD"]
         var staleList: [StaleBranchInfo] = []
 
+        // Local branches: inventory, depth, stale detection
         if let output = git(["for-each-ref", "--format=%(refname:short)\t%(committerdate:unix)", "refs/heads/"]) {
             for line in output.split(separator: "\n") {
                 let parts = line.split(separator: "\t", maxSplits: 1)
@@ -120,7 +126,6 @@ struct GitAnalyzer {
         stats.staleBranches = staleList.sorted { $0.daysInactive > $1.daysInactive }.prefix(10).map { $0 }
 
         if let output = git(["branch", "--merged", "--format=%(refname:short)"]) {
-            let protected: Set<String> = ["main", "master", "develop", "development"]
             stats.merged = output.split(separator: "\n")
                 .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty && !protected.contains($0) }
@@ -151,13 +156,66 @@ struct GitAnalyzer {
             }
         }
 
-        // Rollback / revert commits on main
-        let mainBranch = ["main", "master"].first { git(["rev-parse", "--verify", "--quiet", $0]) != nil } ?? "HEAD"
+        // Detect main branch
+        let mainBranch = ["main", "master"].first {
+            git(["rev-parse", "--verify", "--quiet", $0]) != nil
+        } ?? "HEAD"
+
+        // Rollback / revert commit count and total main commits
         if let revertOut = git(["log", "--pretty=format:%s", mainBranch]) {
-            stats.rollbackCount = revertOut.split(separator: "\n")
+            let subjects = revertOut.split(separator: "\n")
+            stats.totalMainCommits = subjects.count
+            stats.rollbackCount = subjects
                 .filter { $0.lowercased().contains("revert") || $0.lowercased().contains("rollback") }
                 .count
         }
+
+        // Merge analysis: lifetime, TTM, integration delay
+        // Each merge commit line: "<merge-ts> <main-parent> <feature-tip>"
+        var lifetimes: [Double] = []
+        var ttms: [Double] = []
+        var integDelays: [Double] = []
+
+        if let mergeOut = git(["log", mainBranch, "--merges", "-50", "--pretty=format:%at %P"]) {
+            for line in mergeOut.split(separator: "\n") {
+                let fields = line.split(separator: " ")
+                guard fields.count >= 3,
+                      let mergeTs = TimeInterval(fields[0]),
+                      mergeTs > 0 else { continue }
+
+                let mainParent = String(fields[1])
+                let featureTip = String(fields[2])
+
+                // Timestamps of commits on the feature branch not reachable from main
+                guard let featureLog = git([
+                    "log", "\(mainParent)..\(featureTip)", "--pretty=format:%at"
+                ]) else { continue }
+
+                let timestamps = featureLog.split(separator: "\n").compactMap {
+                    TimeInterval($0.trimmingCharacters(in: .whitespacesAndNewlines))
+                }.filter { $0 > 0 }
+
+                guard !timestamps.isEmpty else { continue }
+                let minTs = timestamps.min()!
+                let maxTs = timestamps.max()!
+
+                let lifetimeDays = (maxTs - minTs) / 86400
+                let ttmDays = (mergeTs - minTs) / 86400
+                let delayHours = (mergeTs - maxTs) / 3600
+
+                if lifetimeDays >= 0 && lifetimeDays < 365 { lifetimes.append(lifetimeDays) }
+                if ttmDays >= 0 && ttmDays < 730 { ttms.append(ttmDays) }
+                if delayHours >= 0 && delayHours < 8760 { integDelays.append(delayHours) }
+            }
+        }
+
+        func avg(_ vals: [Double]) -> Double {
+            guard !vals.isEmpty else { return 0 }
+            return vals.reduce(0, +) / Double(vals.count)
+        }
+        stats.avgLifetimeDays = avg(lifetimes)
+        stats.avgTTMDays = avg(ttms)
+        stats.avgIntegDelayHours = avg(integDelays)
 
         stats.total = stats.local + stats.remote
         return stats
