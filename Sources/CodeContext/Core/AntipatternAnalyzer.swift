@@ -146,12 +146,6 @@ private extension AntipatternAnalyzer {
                 detect: checkForceUnwrap
             ),
             APCheck(
-                name: "Never Force Try (try!)",
-                description: "Ignoring errors with `try!` turns any thrown error into an unrecoverable crash. Wrap throwing calls in `do { try … } catch { … }` and handle the error gracefully, or use `try?` with proper nil handling if failure is acceptable.",
-                priority: .high,
-                detect: checkForceTry
-            ),
-            APCheck(
                 name: "Avoid Force Casts (as!)",
                 description: "A forced downcast that fails crashes the app. Use the conditional form `as?` combined with `if let` or `guard let` to safely attempt the cast and handle the failure case instead of aborting.",
                 priority: .high,
@@ -233,12 +227,6 @@ private extension AntipatternAnalyzer {
                 priority: .low,
                 detect: checkExplicitTypeInit
             ),
-            APCheck(
-                name: "Use guard for Early Exit to Reduce Nesting",
-                description: "Deeply nested `if let` chains push the happy path inward, increasing cognitive load. Use `guard let` to bail out early and keep the successful condition at the base indentation level. This produces flatter, more readable functions.",
-                priority: .low,
-                detect: checkGuardEarlyExit
-            ),
         ]
     }
 }
@@ -308,18 +296,6 @@ private extension AntipatternAnalyzer {
             if trimmed.contains("@IBOutlet") || trimmed.contains("@IBAction") { continue }
             let range = NSRange(line.startIndex..., in: line)
             if pattern.firstMatch(in: line, range: range) != nil {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
-            }
-        }
-        return out
-    }
-
-    static func checkForceTry(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        var out: [APViolation] = []
-        for (i, line) in lines.enumerated() {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
-            if line.contains("try!") {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -582,22 +558,4 @@ private extension AntipatternAnalyzer {
         return out
     }
 
-    static func checkGuardEarlyExit(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        var out: [APViolation] = []
-        var braceDepth = 0
-        for (i, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("//") { continue }
-            braceDepth += line.components(separatedBy: "{").count - 1
-            braceDepth -= line.components(separatedBy: "}").count - 1
-            braceDepth = max(0, braceDepth)
-            // Flag `if let` / `if var` at nesting depth >= 3 (inside a function, inside another if/for)
-            if braceDepth >= 3 &&
-               (trimmed.hasPrefix("if let ") || trimmed.hasPrefix("if var ") || trimmed.contains(", let ")) {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
-            }
-        }
-        return out
-    }
 }
