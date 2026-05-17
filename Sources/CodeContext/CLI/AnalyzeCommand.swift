@@ -29,7 +29,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
     var debugSubproject: Bool = false
 
     func run() async throws {
-        print("🚀 Starting SwiftCodeContext analysis for: \(path)")
+        print("🚀 Starting ArchSwiftScope analysis for: \(path)")
 
         let config = ConfigLoader.load()
         DebugFlags.debugSubproject = debugSubproject || config.debugSubproject
@@ -81,7 +81,11 @@ struct AnalyzeCommand: AsyncParsableCommand {
             authorStats: result.authorStats,
             projectName: projectName,
             metadata: result.metadata,
-            monkeyPatchedLibs: result.monkeyPatchedLibs
+            monkeyPatchedLibs: result.monkeyPatchedLibs,
+            branchStats: result.branchStats,
+            semanticStats: result.semanticStats,
+            churnFiles: result.churnFiles,
+            repoPath: URL(fileURLWithPath: path).standardizedFileURL.path
         )
 
         let reportURL = URL(fileURLWithPath: reportPath).standardizedFileURL

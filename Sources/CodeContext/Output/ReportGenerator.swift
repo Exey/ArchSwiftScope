@@ -219,7 +219,11 @@ struct ReportGenerator {
         authorStats: [String: AuthorStats],
         projectName: String = "",
         metadata: ProjectMetadata = ProjectMetadata(),
-        monkeyPatchedLibs: [MonkeyPatchedLibs.DetectedLib] = []
+        monkeyPatchedLibs: [MonkeyPatchedLibs.DetectedLib] = [],
+        branchStats: BranchStats = BranchStats(),
+        semanticStats: SemanticStats = SemanticStats(),
+        churnFiles: [FileChurnStat] = [],
+        repoPath: String = ""
     ) throws {
         // Filter out monkey-patched library files
         let mpLibPaths = monkeyPatchedLibs.map(\.path)
@@ -331,10 +335,139 @@ struct ReportGenerator {
 
         let metalPackages = Set(metadata.metalFiles.compactMap { $0.packageName.isEmpty ? nil : $0.packageName })
 
-        let importsHTML: String = {
-            var sections: [String] = []
+        // ─── Architecture ───
+        let appleFrameworksCount = classifiedImports[.apple]?.count ?? 0
+        let appleFrameworksHTML: String = {
+            guard let names = classifiedImports[.apple], !names.isEmpty else { return "" }
+            return names.sorted().map { "<span class='tag tag-apple'>\($0)</span>" }.joined(separator: " ")
+        }()
 
-            // Compute package line/decl percentages for highlighting
+        let externalLibsCount = classifiedImports[.external]?.count ?? 0
+        let externalLibsHTML: String = {
+            guard let extNames = classifiedImports[.external], !extNames.isEmpty else { return "" }
+            let cleaned = Set(extNames.map { $0.components(separatedBy: ":").first ?? $0 })
+            return cleaned.sorted().map { "<span class='tag tag-external'>\(esc($0))</span>" }.joined(separator: " ")
+        }()
+
+        // Architecture LAYERS — classify files by path patterns
+        var layerCounts: [String: (files: Int, lines: Int)] = [:]
+        for file in projectFiles {
+            let layer = classifyLayer(file.filePath)
+            var entry = layerCounts[layer] ?? (files: 0, lines: 0)
+            entry.files += 1
+            entry.lines += file.lineCount
+            layerCounts[layer] = entry
+        }
+        let layerOrder = ["UI / Views", "Presentation", "Models", "API / Networking", "Persistence", "Auth", "Config", "Utilities", "Tests", "Core"]
+        let layersHTML: String = {
+            let sorted = layerOrder.compactMap { name -> (String, Int, Int)? in
+                guard let e = layerCounts[name] else { return nil }
+                return (name, e.files, e.lines)
+            } + layerCounts.keys
+                .filter { !layerOrder.contains($0) }
+                .sorted()
+                .compactMap { name -> (String, Int, Int)? in
+                    guard let e = layerCounts[name] else { return nil }
+                    return (name, e.files, e.lines)
+                }
+            guard !sorted.isEmpty else { return "" }
+            let maxFiles = sorted.map(\.1).max() ?? 1
+            let rows = sorted.map { (name, files, lines) -> String in
+                let pct = maxFiles > 0 ? Int(Double(files) / Double(maxFiles) * 100) : 0
+                return "<tr><td style='width:160px'><strong>\(esc(name))</strong></td><td class='mono'>\(files)</td><td class='mono'>\(lines.formatted())</td><td style='width:180px'><div style='background:var(--border);border-radius:4px;height:8px;overflow:hidden'><div style='background:var(--accent);width:\(pct)%;height:100%'></div></div></td></tr>"
+            }.joined(separator: "\n")
+            return "<div class='table-wrap'><table class='file-table'><thead><tr><th>Layer</th><th>Files</th><th>Lines</th><th>Proportion</th></tr></thead><tbody>\(rows)</tbody></table></div>"
+        }()
+
+        // Architecture COMPONENTS — detect from Apple frameworks used
+        let usedAppleFrameworks = classifiedImports[.apple] ?? []
+        let componentsHTML: String = {
+            let components = detectComponents(appleFrameworks: usedAppleFrameworks)
+            guard !components.isEmpty else { return "" }
+            let items = components.map { c -> String in
+                "<div class='component-item'><span class='component-icon'>\(c.icon)</span><div><div class='component-name'>\(esc(c.name))</div><div class='component-detail'>\(esc(c.detail))</div></div></div>"
+            }.joined(separator: "\n")
+            return "<div class='component-grid'>\(items)</div>"
+        }()
+
+        // ─── Anti-patterns ───
+        print("   Running anti-pattern checks...")
+        let apResults = AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
+        let apCardHTML = buildAntipatternHTML(apResults)
+
+        // ─── Pre-computed card HTML strings ───
+
+        // Git: Branch Management (goscope bm-grid style)
+        let branchSubCard: String = {
+            guard branchStats.total > 0 else { return "" }
+            var h = "<div class='bm-grid'>"
+            h += "<div class='bm-card'><div class='bm-value'>\(branchStats.total)</div><div class='bm-label'>Total Branches</div></div>"
+            h += "<div class='bm-card'><div class='bm-value'>\(branchStats.local)</div><div class='bm-label'>Local</div></div>"
+            if branchStats.remote > 0 { h += "<div class='bm-card'><div class='bm-value'>\(branchStats.remote)</div><div class='bm-label'>Remote</div></div>" }
+            if branchStats.stale > 0 { h += "<div class='bm-card'><div class='bm-value' style='color:var(--red)'>\(branchStats.stale)</div><div class='bm-label'>Stale (&gt;90d)</div></div>" }
+            if branchStats.merged > 0 { h += "<div class='bm-card'><div class='bm-value' style='color:#34c759'>\(branchStats.merged)</div><div class='bm-label'>Merged</div></div>" }
+            if branchStats.rollbackCount > 0 { h += "<div class='bm-card'><div class='bm-value' style='color:var(--red)'>\(branchStats.rollbackCount)</div><div class='bm-label'>Reverts</div></div>" }
+            if !branchStats.peakCommitDay.isEmpty { h += "<div class='bm-card'><div class='bm-value' style='font-size:16px'>\(esc(branchStats.peakCommitDay))</div><div class='bm-label'>Peak Day</div></div>" }
+            if branchStats.maxDepth > 1 { h += "<div class='bm-card'><div class='bm-value'>\(branchStats.maxDepth)</div><div class='bm-label'>Max Depth</div></div>" }
+            h += "</div>"
+            if !branchStats.staleBranches.isEmpty {
+                let rows = branchStats.staleBranches.map { b -> String in
+                    "<tr><td class='mono' style='font-size:12px'>\(esc(b.name))</td><td class='mono' style='color:var(--red)'>\(b.daysInactive)d</td></tr>"
+                }.joined()
+                h += "<div class='table-wrap'><table class='file-table'><thead><tr><th>Stale Branch</th><th>Inactive</th></tr></thead><tbody>\(rows)</tbody></table></div>"
+            }
+            return h
+        }()
+
+        // Git: Code Churn
+        let churnSubCard: String = {
+            guard !churnFiles.isEmpty else { return "<p style='color:var(--text3)'>No git history available.</p>" }
+            let rows = churnFiles.prefix(15).map { stat -> String in
+                let name = URL(fileURLWithPath: stat.path).lastPathComponent
+                let parts = stat.path.components(separatedBy: "/")
+                let folder = parts.count >= 2 ? parts.dropLast().suffix(2).joined(separator: "/") + "/" : ""
+                let folderHtml = folder.isEmpty ? "" : "<span style='color:var(--text3);font-weight:400'>\(esc(folder))</span>"
+                return "<tr><td>\(folderHtml)<strong>\(esc(name))</strong></td><td class='mono' style='white-space:nowrap'>\(stat.changeCount)</td></tr>"
+            }.joined(separator: "\n")
+            return "<div class='table-wrap'><table class='file-table'><thead><tr><th>File</th><th>Changes</th></tr></thead><tbody>\(rows)</tbody></table></div>"
+        }()
+
+        // Git: Semantic Standards (goscope progress-bar style)
+        let semanticSubCard: String = {
+            guard semanticStats.totalCommits > 0 else { return "<p style='color:var(--text3)'>No commit history available.</p>" }
+            var h = ""
+            // Semver Tags row
+            let semverPct = semanticStats.totalTags > 0 ? semanticStats.semverTags * 100 / semanticStats.totalTags : 0
+            var semTagLabel = "No tags found"
+            if semanticStats.totalTags > 0 {
+                semTagLabel = "\(semanticStats.semverTags) / \(semanticStats.totalTags) tags follow semver"
+                if !semanticStats.latestSemver.isEmpty { semTagLabel += " · latest: <strong>\(esc(semanticStats.latestSemver))</strong>" }
+            }
+            h += "<div class='sem-row'><span class='sem-label'>🏷️ Semver Tags</span><span class='sem-bar-wrap'><span class='sem-bar' style='width:\(semverPct)%'></span></span><span class='sem-stat'>\(semTagLabel)</span></div>"
+            // Conventional Commits row
+            let convPct = semanticStats.conventionalCommits * 100 / semanticStats.totalCommits
+            h += "<div class='sem-row'><span class='sem-label'>📝 Conv. Commits</span><span class='sem-bar-wrap'><span class='sem-bar' style='width:\(convPct)%'></span></span><span class='sem-stat'>\(semanticStats.conventionalCommits) / \(semanticStats.totalCommits) structured</span></div>"
+            // Type breakdown
+            if !semanticStats.topPrefixes.isEmpty {
+                h += "<div class='sem-type-row'>"
+                for p in semanticStats.topPrefixes {
+                    h += "<span class='sem-type-badge'>\(esc(p.prefix)) <strong>\(p.count)</strong></span>"
+                }
+                h += "</div>"
+            }
+            // Non-conventional samples
+            if !semanticStats.samples.isEmpty {
+                h += "<div class='sem-samples'><span style='color:var(--text3);font-size:11px;font-weight:600'>Non-standard samples:</span>"
+                for s in semanticStats.samples {
+                    h += "<div class='sem-sample'>\(esc(s))</div>"
+                }
+                h += "</div>"
+            }
+            return h
+        }()
+
+        // Architecture: Local Packages sub-card content
+        let localPackagesSubCardHTML: String = {
             let totalLinesAll = projectFiles.reduce(0) { $0 + $1.lineCount }
             var pkgLines: [String: Int] = [:]
             var pkgDecls: [String: Int] = [:]
@@ -345,20 +478,15 @@ struct ReportGenerator {
             }
             let lineThreshold = Double(totalLinesAll) * 0.015
 
-            // 1. Local Packages — column grid with clickable links to package sections
+            var content = ""
             if let localNames = classifiedImports[.local], !localNames.isEmpty {
-                let allNames = localNames.sorted()
                 let hasApp = pkgLines["App", default: 0] > 0
-
                 var tags: [String] = []
-
                 if hasApp {
                     let appLines = pkgLines["App", default: 0]
-                    let appTag = "<a href='#pkg-App' class='tag tag-local pkg-link pkg-major'><span class='pkg-name'>📱 App</span><span class='bs-badge-right'>\(appLines.formatted()) loc</span></a>"
-                    tags.append(appTag)
+                    tags.append("<a href='#pkg-App' class='tag tag-local pkg-link pkg-major'><span class='pkg-name'>📱 App</span><span class='bs-badge-right'>\(appLines.formatted()) loc</span></a>")
                 }
-
-                for name in allNames {
+                for name in localNames.sorted() {
                     let bs = packageBuildSystem[name]
                     let bsLabel = bs != nil && bs != .unknown ? "<span class='bs-badge-right'>\(bs!.rawValue)</span>" : ""
                     let anchor = name.replacingOccurrences(of: " ", with: "-")
@@ -369,40 +497,39 @@ struct ReportGenerator {
                     let majorClass = isMajor ? " pkg-major" : ""
                     tags.append("<a href='#pkg-\(anchor)' class='tag tag-local pkg-link\(majorClass)'><span class='pkg-name'>\(metalIcon)\(name)</span>\(bsLabel)</a>")
                 }
-
                 let totalWithApp = localNames.count + (hasApp ? 1 : 0)
-                sections.append("<div class='import-group'><h3>🏠 Local Packages <span class='count'>(\(totalWithApp))</span></h3><div class='pkg-grid'>\(tags.joined(separator: "\n"))</div></div>")
+                content += "<div class='import-group'><div style='color:var(--text3);font-size:12px;margin-bottom:8px'>🏠 \(totalWithApp) packages</div><div class='pkg-grid'>\(tags.joined(separator: "\n"))</div></div>"
             }
-
-            // 2. External Dependencies
-            if let extNames = classifiedImports[.external], !extNames.isEmpty {
-                let cleaned = Set(extNames.map { $0.components(separatedBy: ":").first ?? $0 })
-                let tags = cleaned.sorted().map { "<span class='tag tag-external'>\(esc($0))</span>" }.joined(separator: " ")
-                sections.append("<div class='import-group'><h3>📦 External Dependencies <span class='count'>(\(cleaned.count))</span></h3><div class='tag-cloud'>\(tags)</div></div>")
-            }
-
-            // 2b. Monkey-Patched / Vendored Libraries
-            if !monkeyPatchedLibs.isEmpty {
-                let tags = monkeyPatchedLibs.map { lib -> String in
-                    let size = lib.fileCount
-                    return "<span class='tag tag-external' style='border-color:var(--orange)'>\(esc(lib.name)) <span style='font-size:10px;color:var(--text3)'>\(size) files</span></span>"
-                }.joined(separator: " ")
-                sections.append("<div class='import-group'><h3>🐒 Vendored C/C++ Libraries <span class='count'>(\(monkeyPatchedLibs.count))</span></h3><p class='private-warn' style='color:var(--text3)'>Detected embedded third-party C/C++/ObjC libraries (monkey-patched). Excluded from summary stats and Hot Zones.</p><div class='tag-cloud'>\(tags)</div></div>")
-            }
-
-            // 3. Apple Frameworks
-            if let appleNames = classifiedImports[.apple], !appleNames.isEmpty {
-                let tags = appleNames.sorted().map { "<span class='tag tag-apple'>\($0)</span>" }.joined(separator: " ")
-                sections.append("<div class='import-group'><h3>🍎 Apple Frameworks <span class='count'>(\(appleNames.count))</span></h3><div class='tag-cloud'>\(tags)</div></div>")
-            }
-
-            // 4. Private Frameworks
             if !detectedPrivateFrameworks.isEmpty {
                 let tags = detectedPrivateFrameworks.sorted().map { "<span class='tag tag-private'>\($0)</span>" }.joined(separator: " ")
-                sections.append("<div class='import-group'><h3>🔒 Possible Private Frameworks Usage <span class='count'>(\(detectedPrivateFrameworks.count))</span></h3><p class='private-warn'>These imports match known Apple private frameworks. Using private APIs may cause App Store rejection.</p><div class='tag-cloud'>\(tags)</div></div>")
+                content += "<div style='margin-top:12px'><p class='private-warn'>🔒 Possible Private Frameworks (\(detectedPrivateFrameworks.count)) — may cause App Store rejection:</p><div class='tag-cloud'>\(tags)</div></div>"
             }
+            if !monkeyPatchedLibs.isEmpty {
+                let tags = monkeyPatchedLibs.map { lib in "<span class='tag tag-external'>\(esc(lib.name)) <span style='font-size:10px;color:var(--text3)'>\(lib.fileCount) files</span></span>" }.joined(separator: " ")
+                content += "<div style='margin-top:12px'><p class='private-warn' style='color:var(--text3)'>🐒 Vendored C/C++ Libraries (\(monkeyPatchedLibs.count)) — excluded from stats:</p><div class='tag-cloud'>\(tags)</div></div>"
+            }
+            return content
+        }()
 
-            return sections.joined(separator: "\n")
+        // Architecture card
+        let architectureCardHTML: String = {
+            var h = "<h2>🏛️ Architecture</h2>"
+            if !layersHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>📐 Layers</h3>\(layersHTML)</div>"
+            }
+            if !componentsHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🧩 Components <span class='count'>(\(detectComponents(appleFrameworks: usedAppleFrameworks).count))</span></h3>\(componentsHTML)</div>"
+            }
+            if !appleFrameworksHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🍎 Apple Frameworks <span class='count'>(\(appleFrameworksCount))</span></h3><div class='tag-cloud'>\(appleFrameworksHTML)</div></div>"
+            }
+            if !externalLibsHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>📦 External Libraries <span class='count'>(\(externalLibsCount))</span></h3><div class='tag-cloud'>\(externalLibsHTML)</div></div>"
+            }
+            if !localPackagesSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
+            }
+            return h
         }()
 
         // ─── 3. Packages ───
@@ -604,7 +731,7 @@ struct ReportGenerator {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
-            <title>🔬 SwiftCodeContext — \(esc(projectName))</title>
+            <title>🔬 ArchSwiftScope — \(esc(projectName))</title>
             <style>
                 :root { --bg: #f5f5f7; --card: #fff; --border: #e5e5ea; --text: #1d1d1f; --text2: #424245; --text3: #86868b; --accent: #0071e3; --red: #ff3b30; }
                 * { box-sizing: border-box; }
@@ -654,6 +781,47 @@ struct ReportGenerator {
                 .decl-tags { font-size: 12px; line-height: 1.8; }
                 .pkg-graph-container { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: #fafafa; }
                 .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+                .sub-card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+                .sub-card:last-child { margin-bottom: 0; }
+                .sub-card-title { font-size: 15px; font-weight: 600; margin: 0 0 12px 0; color: var(--text); }
+                .ap-summary { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }
+                .ap-fail-badge { background: #fff0f0; color: var(--red); padding: 4px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
+                .ap-pass-badge { background: #f0fff4; color: #34c759; padding: 4px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
+                .ap-passed-list { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 24px; }
+                .ap-passed-item { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text3); }
+                .ap-priority { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+                .ap-pri-high { background: #ffeaea; color: #c62828; }
+                .ap-pri-med { background: #fff3e0; color: #e65100; }
+                .ap-pri-low { background: #fffde7; color: #f57f17; }
+                .ap-lang-badge { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; background: #e3f2fd; color: #1565c0; }
+                .ap-check { margin-bottom: 16px; border: 1px solid #ffeaea; border-radius: 10px; overflow: hidden; }
+                .ap-check-header { background: #fff8f8; padding: 10px 14px; display: flex; align-items: center; gap: 8px; }
+                .ap-check-title { font-weight: 600; font-size: 14px; flex: 1; }
+                .ap-check-count { color: var(--red); font-size: 12px; font-weight: 500; }
+                .ap-violations { padding: 10px 14px; }
+                .ap-check-desc { font-size: 12px; color: var(--text3); margin-bottom: 8px; line-height: 1.6; }
+                .ap-violation { display: flex; gap: 6px; margin-bottom: 4px; font-size: 12px; overflow: hidden; align-items: center; }
+                .ap-file { font-family: 'SF Mono', Menlo, monospace; color: var(--accent); flex-shrink: 0; }
+                .ap-snippet { font-family: 'SF Mono', Menlo, monospace; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+                .ap-author-badge { margin-left: auto; flex-shrink: 0; background: #e3f2fd; color: #1565c0; font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+                .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+                .component-item { display: flex; align-items: center; gap: 10px; background: var(--bg); border-radius: 10px; padding: 10px 12px; }
+                .component-icon { font-size: 22px; flex-shrink: 0; }
+                .component-name { font-weight: 600; font-size: 13px; }
+                .component-detail { font-size: 11px; color: var(--text3); margin-top: 1px; }
+                .bm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
+                .bm-card { background: var(--bg); border-radius: 10px; padding: 12px; text-align: center; }
+                .bm-value { font-size: 22px; font-weight: 700; color: var(--accent); }
+                .bm-label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+                .sem-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+                .sem-label { width: 160px; flex-shrink: 0; color: var(--text2); font-weight: 500; }
+                .sem-bar-wrap { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+                .sem-bar { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+                .sem-stat { color: var(--text3); font-size: 12px; white-space: nowrap; min-width: 160px; }
+                .sem-type-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+                .sem-type-badge { background: #f0f4ff; color: #1565c0; border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+                .sem-samples { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+                .sem-sample { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--text3); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
                 @media (max-width: 768px) {
                     body { padding: 8px; }
                     .card { padding: 14px; border-radius: 12px; }
@@ -677,7 +845,7 @@ struct ReportGenerator {
         <body>
         <div class="container">
             <div class="card">
-                <h1>🔬 SwiftCodeContext Report — \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
+                <h1>🔬 ArchSwiftScope Report — \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
                 <p class="subtitle">Generated \(Date().formatted()) · <span class="branch-badge">\(esc(branchName))</span> branch</p>
                 <div class="summary-grid">
                     \(!metadata.swiftVersion.isEmpty ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:20px\">Swift \(esc(metadata.swiftVersion))</div><div class=\"label\">Language</div></div>" : "")
@@ -713,18 +881,29 @@ struct ReportGenerator {
                     \(metadata.metalFiles.count > 0 ? "<div class=\"summary-card\"><div class=\"num\">\(metadata.metalFiles.count)</div><div class=\"label\">🔘 Metal</div></div>" : "")
                 </div>
             </div>
-            \(!teamRows.isEmpty ? """
             <div class="card">
-                <h2>👥 Team Contribution Map</h2>
-                <div class="table-wrap"><table class="team-table">
-                    <thead><tr><th>Developer</th><th>Files Modified</th><th>Commits</th><th>First Change</th><th>Last Change</th><th>Top-3 Modules</th></tr></thead>
-                    <tbody>\(teamRows)</tbody>
-                </table></div>
+                <h2>🐙 Git Analysis</h2>
+                \(!teamRows.isEmpty ? """
+                <div class="sub-card">
+                    <h3 class="sub-card-title">👥 Team Contribution Map</h3>
+                    <div class="table-wrap"><table class="team-table">
+                        <thead><tr><th>Developer</th><th>Files Modified</th><th>Commits</th><th>First Change</th><th>Last Change</th><th>Top-3 Modules</th></tr></thead>
+                        <tbody>\(teamRows)</tbody>
+                    </table></div>
+                </div>
+                """ : "")
+                \(!branchSubCard.isEmpty ? "<div class=\"sub-card\"><h3 class=\"sub-card-title\">🌿 Branch Management</h3>\(branchSubCard)</div>" : "")
+                <div class="sub-card">
+                    <h3 class="sub-card-title">🔥 Code Churn</h3>
+                    \(churnSubCard)
+                </div>
+                <div class="sub-card">
+                    <h3 class="sub-card-title">📐 Semantic Standards</h3>
+                    \(semanticSubCard)
+                </div>
             </div>
-            """ : "")
             <div class="card">
-                <h2>📚 Dependencies & Imports</h2>
-                \(importsHTML)
+                \(architectureCardHTML)
             </div>
             \(metadata.assets.totalSizeBytes > 0 ? {
                 let a = metadata.assets
@@ -826,12 +1005,15 @@ struct ReportGenerator {
             </div>
             """ : "")
             <div class="card">
+                \(apCardHTML)
+            </div>
+            <div class="card">
                 <h2>📦 Packages & Modules</h2>
                 <p class="subtitle">Showing files with ≥ 20 lines and at least one declaration. Graphs: type references between declarations. <span style="color:#007aff">●</span> class <span style="color:#34c759">●</span> struct <span style="color:#ff9500">●</span> enum <span style="color:#ff3b30">●</span> actor. Arrows from class/actor only.</p>
                 \(packageSections)
             </div>
             <footer style="text-align:center; padding: 20px 0 10px; color: var(--text3); font-size: 12px;">
-                Generator: <a href="https://github.com/Exey/SwiftCodeContext" style="color: var(--accent); text-decoration: none;">SwiftCodeContext</a> · MIT License · Exey Panteleev
+                Generator: <a href="https://github.com/Exey/ArchSwiftScope" style="color: var(--accent); text-decoration: none;">ArchSwiftScope</a> · MIT License · Exey Panteleev
             </footer>
         </div>
         <script>
@@ -935,6 +1117,109 @@ struct ReportGenerator {
             return String(format: "%.0f KB", Double(bytes) / 1024.0)
         } else {
             return "\(bytes) B"
+        }
+    }
+
+    // MARK: - Anti-pattern HTML
+
+    private func buildAntipatternHTML(_ results: [APResult]) -> String {
+        let passed = results.filter { $0.passed }
+        let failed = results.filter { !$0.passed }
+        var html = "<h2>⚠️ Anti-patterns <span style=\"color:var(--text3);font-size:14px;font-weight:400\">(\(results.count) checks)</span></h2>"
+
+        if !passed.isEmpty {
+            html += "<div class=\"ap-summary\"><span class=\"ap-pass-badge\">✓ \(passed.count) passed</span></div>"
+            html += "<div class=\"ap-passed-list\">"
+            for r in passed {
+                html += "<div class=\"ap-passed-item\"><span style=\"color:#34c759\">✓</span><span class=\"ap-lang-badge\">SWIFT</span>\(apPriBadge(r.check.priority))<span>\(esc(r.check.name))</span></div>"
+            }
+            html += "</div>"
+        }
+
+        html += "<div class=\"ap-summary\"><span class=\"ap-fail-badge\">✗ \(failed.count) failed</span></div>"
+
+        for pri in [APPriority.high, .medium, .low] {
+            for r in failed where r.check.priority == pri {
+                html += "<div class=\"ap-check\">"
+                html += "<div class=\"ap-check-header\">\(apPriBadge(r.check.priority))<span class=\"ap-lang-badge\">SWIFT</span>"
+                html += "<span class=\"ap-check-title\">\(esc(r.check.name))</span>"
+                html += "<span class=\"ap-check-count\">\(r.violations.count) violations</span></div>"
+                html += "<div class=\"ap-violations\">"
+                html += "<div class=\"ap-check-desc\">\(esc(r.check.description))</div>"
+                for v in r.violations {
+                    let authorBadge = v.author.map { "<span class=\"ap-author-badge\">\(esc($0))</span>" } ?? ""
+                    html += "<div class=\"ap-violation\"><span class=\"ap-file\">\(esc(v.file)):\(v.line)</span><span class=\"ap-snippet\">\(esc(v.snippet))</span>\(authorBadge)</div>"
+                }
+                html += "</div></div>"
+            }
+        }
+        return html
+    }
+
+    private func apPriBadge(_ p: APPriority) -> String {
+        switch p {
+        case .high:   return "<span class=\"ap-priority ap-pri-high\">HIGH</span>"
+        case .medium: return "<span class=\"ap-priority ap-pri-med\">MEDIUM</span>"
+        case .low:    return "<span class=\"ap-priority ap-pri-low\">LOW</span>"
+        }
+    }
+
+    // MARK: - Architecture Helpers
+
+    private func classifyLayer(_ filePath: String) -> String {
+        let path = filePath.lowercased()
+        let name = URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent.lowercased()
+        if path.contains("/test") || name.hasSuffix("test") || name.hasSuffix("tests") || name.hasSuffix("spec") || name.hasSuffix("mock") || name.hasSuffix("stub") || name.hasSuffix("fake") { return "Tests" }
+        if path.contains("/api/") || path.contains("/network") || path.contains("/service/") || path.contains("/services/") || path.contains("/endpoint") || name.hasSuffix("api") || name.hasSuffix("service") || name.hasSuffix("client") || name.hasSuffix("endpoint") || name.hasSuffix("request") || name.hasSuffix("response") { return "API / Networking" }
+        if path.contains("/model/") || path.contains("/models/") || path.contains("/entity/") || path.contains("/entities/") || path.contains("/domain/") || name.hasSuffix("model") || name.hasSuffix("entity") || name.hasSuffix("dto") { return "Models" }
+        if path.contains("/viewmodel") || path.contains("/presenter") || path.contains("/interactor") || name.hasSuffix("viewmodel") || name.hasSuffix("presenter") || name.hasSuffix("interactor") || name.hasSuffix("coordinator") { return "Presentation" }
+        if path.contains("/view/") || path.contains("/views/") || path.contains("/ui/") || path.contains("/scene/") || path.contains("/scenes/") || name.hasSuffix("view") || name.hasSuffix("screen") || name.hasSuffix("cell") || name.hasSuffix("controller") || name.hasSuffix("viewcontroller") { return "UI / Views" }
+        if path.contains("/storage") || path.contains("/persistence") || path.contains("/database") || path.contains("/repository") || name.hasSuffix("repository") || name.hasSuffix("store") || name.hasSuffix("storage") || name.hasSuffix("cache") || name.hasSuffix("dao") { return "Persistence" }
+        if path.contains("/auth") || name.hasSuffix("auth") || name.hasSuffix("authenticator") || name.hasSuffix("authorization") { return "Auth" }
+        if path.contains("/util") || path.contains("/helper") || path.contains("/extension") || name.hasSuffix("util") || name.hasSuffix("helper") || name.hasSuffix("extension") || name.hasSuffix("extensions") || name.hasSuffix("utils") || name.hasSuffix("helpers") { return "Utilities" }
+        if path.contains("/config") || path.contains("/setting") || name.hasSuffix("config") || name.hasSuffix("configuration") || name.hasSuffix("settings") || name.hasSuffix("constants") || name.hasSuffix("constant") { return "Config" }
+        return "Core"
+    }
+
+    private func detectComponents(appleFrameworks: Set<String>) -> [(name: String, detail: String, icon: String)] {
+        let checks: [(frameworks: Set<String>, name: String, detail: String, icon: String)] = [
+            (["SwiftUI"], "SwiftUI", "Declarative UI", "🎨"),
+            (["UIKit"], "UIKit", "Imperative UI", "📱"),
+            (["AppKit"], "AppKit", "macOS UI", "🖥️"),
+            (["Combine"], "Combine", "Reactive Streams", "🔄"),
+            (["CoreData"], "CoreData", "Object Graph Persistence", "🗄️"),
+            (["SwiftData"], "SwiftData", "Swift-native Persistence", "💾"),
+            (["ARKit", "RealityKit"], "AR / Reality", "Augmented Reality", "🥽"),
+            (["CoreML", "CreateML"], "CoreML", "Machine Learning", "🧠"),
+            (["MapKit"], "MapKit", "Maps & Location", "🗺️"),
+            (["AVFoundation", "AVKit"], "AVFoundation", "Audio / Video", "🎬"),
+            (["CoreBluetooth"], "Bluetooth", "BLE Communication", "📡"),
+            (["HealthKit"], "HealthKit", "Health Data", "❤️"),
+            (["AuthenticationServices", "LocalAuthentication"], "Auth Services", "Authentication", "🔐"),
+            (["StoreKit"], "StoreKit", "In-App Purchases", "💳"),
+            (["CloudKit"], "CloudKit", "iCloud Sync", "☁️"),
+            (["CryptoKit"], "CryptoKit", "Cryptography", "🔑"),
+            (["Vision"], "Vision", "Computer Vision", "👁️"),
+            (["NaturalLanguage"], "NaturalLanguage", "Text Analysis", "📝"),
+            (["Metal", "MetalKit"], "Metal", "GPU Computing", "🔘"),
+            (["GameKit", "SpriteKit", "GameplayKit"], "Game", "Game Services", "🎮"),
+            (["CoreLocation", "CoreLocationUI"], "Location", "Location Services", "📍"),
+            (["UserNotifications", "PushKit"], "Notifications", "Push & Local", "🔔"),
+            (["WebKit"], "WebKit", "Web Rendering", "🌐"),
+            (["Network", "NetworkExtension"], "Network", "Low-level Networking", "🔗"),
+            (["CoreMotion", "SensorKit"], "Motion / Sensors", "Device Sensors", "📐"),
+            (["Photos", "PhotosUI"], "Photos", "Photo Library", "🖼️"),
+            (["Contacts", "ContactsUI"], "Contacts", "Address Book", "👤"),
+            (["EventKit"], "EventKit", "Calendar & Reminders", "📅"),
+            (["CoreHaptics"], "Haptics", "Haptic Feedback", "📳"),
+            (["SceneKit"], "SceneKit", "3D Scenes", "🧊"),
+            (["AppIntents"], "App Intents", "Siri & Shortcuts", "🎙️"),
+            (["WidgetKit"], "WidgetKit", "Home Screen Widgets", "🔲"),
+            (["SwiftTesting", "XCTest"], "Testing", "Unit & UI Tests", "🧪"),
+            (["Observation"], "Observation", "Swift Observation", "👀"),
+        ]
+        return checks.compactMap { check in
+            check.frameworks.isDisjoint(with: appleFrameworks) ? nil : (name: check.name, detail: check.detail, icon: check.icon)
         }
     }
 }

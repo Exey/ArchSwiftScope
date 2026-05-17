@@ -1,4 +1,4 @@
-# 🔬 SwiftCodeContext
+# 🔬 ArchSwiftScope
 
 **Native macOS CLI tool for Swift codebase intelligence** — find critical files, generate dependency graphs, learning paths, and detailed reports.
 
@@ -11,7 +11,7 @@ Built 100% in Swift using Apple-native technologies. **Fully offline. No network
 ## ⚡ Generate a Report in 10 Seconds
 
 ```bash
-cd SwiftCodeContext
+cd ArchSwiftScope
 
 # Projects under 200K lines — just run directly
 swift run codecontext analyze ~/path/to/your/project --open
@@ -41,10 +41,46 @@ Your code never leaves your machine unless you explicitly enable the optional AI
 
 ---
 
+## 📊 What the Report Contains
+
+The generated HTML report is a single self-contained file — open it anywhere, share it, archive it. No internet connection needed to view it.
+
+1. **Summary** — total files, lines of code, declarations by type (structs, classes, enums, protocols, actors), Swift version, deployment targets, app version, and package count
+
+2. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
+   - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
+   - **📊 Commit Activity** — total commits, contributor count, first commit and last active dates
+   - **🌿 Branch Management** — total branch count (local + remote), stale branches (>90 days inactive), and already-merged branches
+   - **🔥 Code Churn** — top 15 most frequently changed files by commit count, ranked from highest to lowest
+   - **📐 Semantic Standards** — conventional commit compliance rate, semver tag count, and a breakdown of commit prefix types (feat, fix, chore, etc.)
+
+3. **🏛️ Architecture** — structural decomposition across 5 sub-sections:
+   - **📐 Layers** — files classified by directory/naming patterns into UI/Views, Presentation, Models, API/Networking, Persistence, Auth, Config, Utilities, Tests, Core — with file counts, line counts, and proportional bar chart
+   - **🧩 Components** — detected architectural components from Apple framework imports (SwiftUI, UIKit, CoreData, Combine, ARKit, CoreML, and 30+ more)
+   - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
+   - **📦 External Libraries** — third-party package imports detected across the codebase
+   - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
+
+4. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
+
+5. **⚠️ Anti-patterns** — 20 static checks across HIGH / MEDIUM / LOW priorities, each with violation count, file location, and code snippet. Checks include force unwrap, retain cycles, hardcoded secrets, missing `final`, empty `catch`, IUOs, and more
+
+6. **🎨 Assets** — media resource analysis showing total size, file count by type, and top 3 heaviest files per type
+
+7. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+
+8. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
+
+9. **📏 Longest Functions** — ranked list of functions by line count, flagging refactoring candidates
+
+10. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
+
+---
+
 ## 🚀 Quick Start
 
 ```bash
-cd SwiftCodeContext
+cd ArchSwiftScope
 
 # Build
 swift build
@@ -63,7 +99,7 @@ swift run codecontext --help
 ### Option 1: Swift CLI (Recommended)
 
 ```bash
-cd SwiftCodeContext
+cd ArchSwiftScope
 
 # Debug build (fast compilation)
 swift build
@@ -102,6 +138,7 @@ open Package.swift
 ```
 
 In Xcode:
+
 1. Select the `codecontext` scheme
 2. Edit Scheme → Run → Arguments → add: `analyze /path/to/your/project`
 3. ⌘R to build and run
@@ -139,34 +176,6 @@ codecontext evolution --months 12 --interval 7
 codecontext init
 # Creates .codecontext.json with sensible defaults
 ```
-
----
-
-## 📊 What the Report Contains
-
-The generated HTML report is a single self-contained file — open it anywhere, share it, archive it. No internet connection needed to view it.
-
-1. **Summary** — total files, lines of code, declarations by type (structs, classes, enums, protocols, actors), and package count
-
-2. **Team Contribution Map** — developer activity tracking with files modified, commit counts, and first/last change dates
-
-3. **Dependencies & Imports** — comprehensive classification into Apple frameworks, external dependencies, and local Swift packages with interactive tag clouds
-
-4. **Assets** — media resource analysis showing total size, file count by type, and top 3 heaviest files with their individual sizes
-
-5. **Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code. Each entry includes clickable module badges and inline documentation previews
-
-6. **Module Insights** — package penetration analysis showing which modules are imported by the most other packages (foundational dependencies), plus quality metrics including TODO/FIXME density and technical debt indicators
-
-7. **Longest Functions** — ranked list of functions by line count, with clickable module badges and quick navigation to potential refactoring candidates
-
-8. **Packages & Modules** — detailed breakdown of each local Swift package:
-   - Complete file inventory sorted by lines of code
-   - Declaration statistics by type (classes, structs, enums, protocols, actors, extensions)
-   - Interactive force-directed dependency graph per package, colored by declaration type (🔵 classes, 🟢 structs, 🟡 enums, 🔴 actors)
-   - File-level annotations with inline documentation previews
-   - Precise line counts and declaration tags for every file
-   - Package-level metrics including total files, lines, and declaration distribution
 
 ---
 
@@ -214,7 +223,7 @@ Add an `ai` block to your `.codecontext.json`:
 ### Supported AI Providers
 
 | Provider | `provider` | Model examples |
-|----------|-----------|----------------|
+| -------- | ---------- | -------------- |
 | Anthropic Claude | `"anthropic"` | `claude-sonnet-4-20250514` |
 | Google Gemini | `"gemini"` | `gemini-2.5-flash` |
 
@@ -233,8 +242,8 @@ When you run `ask`, a summary of your project structure and relevant code contex
 
 ## 📁 Project Structure
 
-```
-SwiftCodeContext/
+```text
+ArchSwiftScope/
 ├── Package.swift
 ├── Sources/CodeContext/
 │   ├── CLI/

@@ -48,6 +48,9 @@ enum AnalysisPipeline {
         let authorStats: [String: AuthorStats]
         let metadata: ProjectMetadata
         let monkeyPatchedLibs: [MonkeyPatchedLibs.DetectedLib]
+        let branchStats: BranchStats
+        let semanticStats: SemanticStats
+        let churnFiles: [FileChurnStat]
     }
 
     static func run(
@@ -134,7 +137,9 @@ enum AnalysisPipeline {
         let gitAnalyzer = GitAnalyzer(repoPath: repoAbsPath, commitLimit: config.gitCommitLimit)
         let branchName = gitAnalyzer.currentBranch()
         let globalAuthorStats = gitAnalyzer.authorStats()
-        let (enrichedFiles, authorFileCounts) = gitAnalyzer.analyze(files: parsedFiles)
+        let (enrichedFiles, authorFileCounts, churnFiles) = gitAnalyzer.analyze(files: parsedFiles)
+        let gitBranchStats = gitAnalyzer.branchStats()
+        let gitSemanticStats = gitAnalyzer.semanticStats()
 
         print("🕸️  Building dependency graph...")
         let graph = DependencyGraph()
@@ -157,7 +162,8 @@ enum AnalysisPipeline {
         return Result(
             graph: graph, parsedFiles: parsedFiles, enrichedFiles: enrichedFiles,
             branchName: branchName, authorStats: mergedStats, metadata: metadata,
-            monkeyPatchedLibs: monkeyLibs
+            monkeyPatchedLibs: monkeyLibs,
+            branchStats: gitBranchStats, semanticStats: gitSemanticStats, churnFiles: churnFiles
         )
     }
 

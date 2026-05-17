@@ -11,6 +11,44 @@ struct AuthorStats {
     var lastCommitDate: TimeInterval = 0
 }
 
+// MARK: - Branch Stats
+
+struct StaleBranchInfo {
+    let name: String
+    let daysInactive: Int
+}
+
+struct BranchStats {
+    var total: Int = 0
+    var local: Int = 0
+    var remote: Int = 0
+    var stale: Int = 0
+    var merged: Int = 0
+    var maxDepth: Int = 0
+    var peakCommitDay: String = ""
+    var rollbackCount: Int = 0
+    var staleBranches: [StaleBranchInfo] = []
+}
+
+// MARK: - File Churn Stat
+
+struct FileChurnStat {
+    let path: String
+    let changeCount: Int
+}
+
+// MARK: - Semantic Stats
+
+struct SemanticStats {
+    var totalCommits: Int = 0
+    var conventionalCommits: Int = 0
+    var semverTags: Int = 0
+    var totalTags: Int = 0
+    var latestSemver: String = ""
+    var topPrefixes: [(prefix: String, count: Int)] = []
+    var samples: [String] = []
+}
+
 // MARK: - Git Analyzer
 
 /// Analyzes git history using the native `git` command line tool.
@@ -58,13 +96,119 @@ struct GitAnalyzer {
         return stats
     }
 
+    func branchStats() -> BranchStats {
+        var stats = BranchStats()
+        let now = Date().timeIntervalSince1970
+        let staleThreshold: TimeInterval = 90 * 24 * 3600
+        var staleList: [StaleBranchInfo] = []
+
+        if let output = git(["for-each-ref", "--format=%(refname:short)\t%(committerdate:unix)", "refs/heads/"]) {
+            for line in output.split(separator: "\n") {
+                let parts = line.split(separator: "\t", maxSplits: 1)
+                guard !parts.isEmpty else { continue }
+                let name = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let ts = parts.count >= 2 ? (TimeInterval(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) : 0
+                stats.local += 1
+                let depth = name.components(separatedBy: "/").count
+                if depth > stats.maxDepth { stats.maxDepth = depth }
+                if ts > 0 && (now - ts) > staleThreshold {
+                    stats.stale += 1
+                    staleList.append(StaleBranchInfo(name: name, daysInactive: Int((now - ts) / 86400)))
+                }
+            }
+        }
+        stats.staleBranches = staleList.sorted { $0.daysInactive > $1.daysInactive }.prefix(10).map { $0 }
+
+        if let output = git(["branch", "--merged", "--format=%(refname:short)"]) {
+            let protected: Set<String> = ["main", "master", "develop", "development"]
+            stats.merged = output.split(separator: "\n")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !protected.contains($0) }
+                .count
+        }
+
+        if let output = git(["for-each-ref", "--format=%(refname:short)", "refs/remotes/"]) {
+            stats.remote = output.split(separator: "\n")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.hasSuffix("/HEAD") }
+                .count
+        }
+
+        // Peak commit day from recent history
+        if let dayOut = git(["log", "--all", "-2000", "--pretty=format:%at"]) {
+            var dayCounts: [Int: Int] = [:]
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = TimeZone(identifier: "UTC")!
+            for line in dayOut.split(separator: "\n") {
+                if let ts = TimeInterval(line.trimmingCharacters(in: .whitespacesAndNewlines)), ts > 0 {
+                    let weekday = cal.component(.weekday, from: Date(timeIntervalSince1970: ts)) - 1
+                    dayCounts[weekday, default: 0] += 1
+                }
+            }
+            if let peak = dayCounts.max(by: { $0.value < $1.value }) {
+                let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+                if peak.key >= 0 && peak.key < days.count { stats.peakCommitDay = days[peak.key] }
+            }
+        }
+
+        // Rollback / revert commits on main
+        let mainBranch = ["main", "master"].first { git(["rev-parse", "--verify", "--quiet", $0]) != nil } ?? "HEAD"
+        if let revertOut = git(["log", "--pretty=format:%s", mainBranch]) {
+            stats.rollbackCount = revertOut.split(separator: "\n")
+                .filter { $0.lowercased().contains("revert") || $0.lowercased().contains("rollback") }
+                .count
+        }
+
+        stats.total = stats.local + stats.remote
+        return stats
+    }
+
+    func semanticStats() -> SemanticStats {
+        var stats = SemanticStats()
+        guard let subjects = git(["log", "--pretty=format:%s", "-\(commitLimit)"]) else { return stats }
+
+        let lines = subjects.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        stats.totalCommits = lines.count
+
+        let conventionalTypes = ["feat", "fix", "docs", "chore", "refactor", "test", "style", "ci", "build", "perf", "revert"]
+        let pattern = "^(" + conventionalTypes.joined(separator: "|") + ")(\\([^)]+\\))?!?:\\s"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return stats }
+
+        var prefixCounts: [String: Int] = [:]
+        for subject in lines {
+            let range = NSRange(subject.startIndex..., in: subject)
+            if let match = regex.firstMatch(in: subject, range: range),
+               let typeRange = Range(match.range(at: 1), in: subject) {
+                prefixCounts[String(subject[typeRange]), default: 0] += 1
+                stats.conventionalCommits += 1
+            } else if stats.samples.count < 5 {
+                stats.samples.append(subject)
+            }
+        }
+        stats.topPrefixes = prefixCounts.sorted { $0.value > $1.value }.prefix(6).map { (prefix: $0.key, count: $0.value) }
+
+        // Tags sorted newest-first via --sort=-version:refname
+        if let tagOutput = git(["tag", "--sort=-version:refname"]) {
+            let tags = tagOutput.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+            stats.totalTags = tags.count
+            let semverPat = try? NSRegularExpression(pattern: "^v?\\d+\\.\\d+\\.\\d+")
+            let semverTags = tags.filter { tag in
+                guard let pat = semverPat else { return false }
+                return pat.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)) != nil
+            }
+            stats.semverTags = semverTags.count
+            stats.latestSemver = semverTags.first ?? ""
+        }
+        return stats
+    }
+
     /// Batch-enrich files with git metadata using ONE git log call.
-    /// Returns enriched files and accurate per-author filesModified counts.
-    func analyze(files: [ParsedFile]) -> (files: [ParsedFile], authorFileCounts: [String: Int]) {
+    /// Returns enriched files, per-author filesModified counts, and top churn files.
+    func analyze(files: [ParsedFile]) -> (files: [ParsedFile], authorFileCounts: [String: Int], churnFiles: [FileChurnStat]) {
         let gitDir = URL(fileURLWithPath: repoPath).appendingPathComponent(".git")
         guard FileManager.default.fileExists(atPath: gitDir.path) else {
             print("⚠️  No .git directory found. Skipping Git analysis.")
-            return (files, [:])
+            return (files, [:], [])
         }
 
         let total = files.count
@@ -111,7 +255,13 @@ struct GitAnalyzer {
 
         let elapsed2 = CFAbsoluteTimeGetCurrent() - startTime
         print("   Git analysis complete in \(String(format: "%.1f", elapsed2))s")
-        return (results, authorFileCounts)
+
+        let topChurn = batchStats
+            .map { FileChurnStat(path: $0.key, changeCount: $0.value.changeCount) }
+            .sorted { $0.changeCount > $1.changeCount }
+            .prefix(25)
+
+        return (results, authorFileCounts, Array(topChurn))
     }
 
     // MARK: - Batch Collection
@@ -192,6 +342,33 @@ struct GitAnalyzer {
             return result
         }
         return absolutePath
+    }
+
+    /// Returns a line-number → author-name map for a file via `git blame --porcelain`.
+    func blameLines(filePath: String) -> [Int: String] {
+        guard let output = git(["blame", "--porcelain", filePath]) else { return [:] }
+        var result: [Int: String] = [:]
+        var commitAuthors: [String: String] = [:]
+        var currentCommit = ""
+        var currentLine = 0
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            let fields = line.split(separator: " ")
+            if fields.count >= 3, fields[0].count == 40, fields[0].allSatisfy({ $0.isHexDigit }) {
+                currentCommit = String(fields[0])
+                currentLine = Int(fields[2]) ?? 0
+                continue
+            }
+            if line.hasPrefix("author ") {
+                let author = String(line.dropFirst("author ".count))
+                commitAuthors[currentCommit] = author
+                if currentLine > 0 { result[currentLine] = author }
+            } else if line.hasPrefix("\t") {
+                if currentLine > 0, let author = commitAuthors[currentCommit] {
+                    result[currentLine] = author
+                }
+            }
+        }
+        return result
     }
 
     @discardableResult
