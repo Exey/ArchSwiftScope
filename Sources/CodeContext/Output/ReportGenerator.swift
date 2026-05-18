@@ -582,12 +582,15 @@ struct ReportGenerator {
             archFileCount[pkg, default: 0] += 1
         }
         var archEdgeSeen = Set<String>()
+        var archRawConnections = 0
         var archLinks: [ArchLink] = []
         for edge in graph.edges {
             let src = fileToPackage[edge.source] ?? "App"
             let tgt = fileToPackage[edge.target] ?? "App"
             guard src != tgt else { continue }
-            let key = "\(src)→\(tgt)"
+            archRawConnections += 1
+            // Collapse A→B and B→A into a single edge using a sorted canonical key
+            let key = [src, tgt].sorted().joined(separator: "↔")
             if archEdgeSeen.insert(key).inserted {
                 archLinks.append(ArchLink(source: src, target: tgt))
             }
@@ -598,6 +601,9 @@ struct ReportGenerator {
             ArchGraphData(nodes: archNodes, links: archLinks)
         ), encoding: .utf8)) ?? "{\"nodes\":[],\"links\":[]}"
         let showArchGraph = archNodes.count >= 2
+        let archNodeCount = archNodes.count
+        let archLinkDist = archNodeCount > 100 ? 220 : 120
+        let archChargeStr = archNodeCount > 100 ? -600 : -300
 
         // Architecture card
         let architectureCardHTML: String = {
@@ -615,7 +621,7 @@ struct ReportGenerator {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>📦 External Libraries <span class='count'>(\(externalLibsCount))</span></h3><div class='tag-cloud'>\(externalLibsHTML)</div></div>"
             }
             if showArchGraph {
-                h += "<div class='sub-card'><h3 class='sub-card-title'>🗺️ Architecture Graph</h3><div id='arch-graph' class='arch-graph-container'></div></div>"
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🗺️ Architecture Graph <span class='count'>(\(archRawConnections) connections)</span></h3><div id='arch-graph' class='arch-graph-container'></div></div>"
             }
             if !localPackagesSubCardHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
@@ -781,13 +787,12 @@ struct ReportGenerator {
                                 ctx.fillText(node.label, node.x, node.y + r + 12/gs);
                             }
                         })
-                        .linkDirectionalArrowLength(8)
-                        .linkDirectionalArrowRelPos(1)
-                        .linkColor(() => 'rgba(0,0,0,0.15)')
+                        .linkDirectionalArrowLength(0)
+                        .linkColor(() => 'rgba(0,0,0,0.2)')
                         .width(el.offsetWidth)
                         .height(500);
-                    g.d3Force('charge').strength(-300);
-                    g.d3Force('link').distance(120);
+                    g.d3Force('charge').strength(\(archChargeStr));
+                    g.d3Force('link').distance(\(archLinkDist));
                 }
             }
 
