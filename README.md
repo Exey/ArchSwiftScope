@@ -47,7 +47,7 @@ The generated HTML report is a single self-contained file — open it anywhere, 
 
 2. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
-   - **📊 Commit Activity** — total commits, contributor count, first commit and last active dates
+   - **📊 Commit Activity** — commit metrics like rollback rate
    - **🌿 Branch Management** — total branch count (local + remote), stale branches (>90 days inactive), and already-merged branches
    - **🔥 Code Churn** — top 15 most frequently changed files by commit count, ranked from highest to lowest
    - **📐 Semantic Standards** — conventional commit compliance rate, semver tag count, and a breakdown of commit prefix types (feat, fix, chore, etc.)
@@ -58,7 +58,7 @@ The generated HTML report is a single self-contained file — open it anywhere, 
    - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
    - **📦 External Libraries** — third-party package imports detected across the codebase
    - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
-   - **🗺️ Architecture Graph
+   - 🗺️ Architecture Graph - top level design
 
 4. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
