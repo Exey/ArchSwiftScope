@@ -28,6 +28,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Log subproject/package detection details")
     var debugSubproject: Bool = false
 
+    @Flag(name: .long, help: "Skip Packages & Modules section (faster for large codebases)")
+    var skipModules: Bool = false
+
     func run() async throws {
         print("🚀 Starting ArchSwiftScope analysis for: \(path)")
 
@@ -93,6 +96,17 @@ struct AnalyzeCommand: AsyncParsableCommand {
         let passed = apResults.filter { $0.passed }.count
         print("   \(failed) failed · \(passed) passed")
 
+        // OOP vs POP analysis
+        print("\n🧬 OOP vs POP · \(swiftFileCount) Swift files")
+        let oopStats = OOPvsPOPAnalyzer.analyze(files: projectFiles)
+        let oopBar: String = {
+            let filled = oopStats.popScore / 5
+            let empty  = 20 - filled
+            return String(repeating: "█", count: filled) + String(repeating: "░", count: empty)
+        }()
+        print("   [\(oopBar)] \(oopStats.popScore)% POP")
+        print("   \(oopStats.totalClasses) classes · \(oopStats.finalClasses) final · \(oopStats.totalStructs) structs · \(oopStats.totalProtocols) protocols")
+
         // Generate report
         print("\n📊 Generating report...")
         let outputDir = "output"
@@ -113,7 +127,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
             semanticStats: result.semanticStats,
             churnFiles: result.churnFiles,
             repoPath: repoPath,
-            apResults: apResults
+            apResults: apResults,
+            oopStats: oopStats,
+            skipModules: skipModules
         )
 
         let reportURL = URL(fileURLWithPath: reportPath).standardizedFileURL

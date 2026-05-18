@@ -58,18 +58,23 @@ The generated HTML report is a single self-contained file — open it anywhere, 
    - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
    - **📦 External Libraries** — third-party package imports detected across the codebase
    - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
+   - **🗺️ Architecture Graph
 
 4. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
-5. **⚠️ Anti-patterns** — 20 static checks across HIGH / MEDIUM / LOW priorities, each with violation count, file location, and code snippet. Checks include force unwrap, retain cycles, hardcoded secrets, missing `final`, empty `catch`, IUOs, and more
+5. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
-6. **🎨 Assets** — media resource analysis showing total size, file count by type, and top 3 heaviest files per type
+6. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
 
-7. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+7. **📏 Longest Functions** — ranked list of functions by line count, flagging refactoring candidates
 
-8. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
+8. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
+   - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
+   - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
+   - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
+   - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
 
-9. **📏 Longest Functions** — ranked list of functions by line count, flagging refactoring candidates
+9. **⚠️ Anti-patterns** — 20 static checks across HIGH / MEDIUM / LOW priorities, each with violation count, file location, and code snippet. Checks include force unwrap / force try, retain cycles, hardcoded secrets, missing `final`, empty `catch`, IUOs, and more
 
 10. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
 
@@ -156,6 +161,9 @@ codecontext analyze ~/Projects/MyApp
 
 # With options
 codecontext analyze ~/Projects/MyApp --no-cache --verbose --open
+
+# Skip the Packages & Modules section (faster for large codebases)
+codecontext analyze ~/Projects/MyApp --skip-modules --open
 ```
 
 ### View Codebase Evolution

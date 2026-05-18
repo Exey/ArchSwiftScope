@@ -224,7 +224,9 @@ struct ReportGenerator {
         semanticStats: SemanticStats = SemanticStats(),
         churnFiles: [FileChurnStat] = [],
         repoPath: String = "",
-        apResults: [APResult] = []
+        apResults: [APResult] = [],
+        oopStats: OOPvsPOPStats? = nil,
+        skipModules: Bool = false
     ) throws {
         // Filter out monkey-patched library files
         let mpLibPaths = monkeyPatchedLibs.map(\.path)
@@ -357,7 +359,18 @@ struct ReportGenerator {
             entry.lines += file.lineCount
             layerCounts[layer] = entry
         }
-        let layerOrder = ["UI / Views", "Presentation", "Models", "API / Networking", "Persistence", "Auth", "Config", "Utilities", "Tests", "Core"]
+        let layerOrder = ["UI / Views", "Models", "API / Networking", "Persistence", "Auth", "Config", "Utilities", "Tests", "Core"]
+        let layerEmoji: [String: String] = [
+            "UI / Views":       "📱",
+            "Models":           "📦",
+            "API / Networking": "🌐",
+            "Persistence":      "🗄️",
+            "Auth":             "🔐",
+            "Config":           "⚙️",
+            "Utilities":        "🧰",
+            "Tests":            "🧪",
+            "Core":             "🔩",
+        ]
         let layersHTML: String = {
             let sorted = layerOrder.compactMap { name -> (String, Int, Int)? in
                 guard let e = layerCounts[name] else { return nil }
@@ -370,12 +383,23 @@ struct ReportGenerator {
                     return (name, e.files, e.lines)
                 }
             guard !sorted.isEmpty else { return "" }
-            let maxFiles = sorted.map(\.1).max() ?? 1
-            let rows = sorted.map { (name, files, lines) -> String in
-                let pct = maxFiles > 0 ? Int(Double(files) / Double(maxFiles) * 100) : 0
-                return "<tr><td style='width:160px'><strong>\(esc(name))</strong></td><td class='mono'>\(files)</td><td class='mono'>\(lines.formatted())</td><td style='width:180px'><div style='background:var(--border);border-radius:4px;height:8px;overflow:hidden'><div style='background:var(--accent);width:\(pct)%;height:100%'></div></div></td></tr>"
+            let maxLines = sorted.map(\.2).max() ?? 1
+            let items = sorted.map { (name, files, lines) -> String in
+                let pct = maxLines > 0 ? Int(Double(lines) / Double(maxLines) * 100) : 0
+                let icon = layerEmoji[name] ?? "•"
+                let locStr = lines.formatted()
+                return """
+                <div class="arch-layer">\
+                <div class="layer-bar-row">\
+                <span class="layer-icon">\(icon)</span>\
+                <span class="layer-name">\(esc(name))</span>\
+                <span class="layer-count">\(files) files · \(locStr) loc</span>\
+                </div>\
+                <div class="layer-bar-track"><div class="layer-bar-fill" style="width:\(pct)%"></div></div>\
+                </div>
+                """
             }.joined(separator: "\n")
-            return "<div class='table-wrap'><table class='file-table'><thead><tr><th>Layer</th><th>Files</th><th>Lines</th><th>Proportion</th></tr></thead><tbody>\(rows)</tbody></table></div>"
+            return "<div class='arch-layers'>\(items)</div>"
         }()
 
         // Architecture COMPONENTS — detect from Apple frameworks used
@@ -405,6 +429,10 @@ struct ReportGenerator {
             ? AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
             : apResults
         let apCardHTML = buildAntipatternHTML(resolvedAPResults)
+
+        // ─── OOP vs POP ───
+        let resolvedOOPStats = oopStats ?? OOPvsPOPAnalyzer.analyze(files: projectFiles)
+        let oopCardHTML = buildOOPvsPOPHTML(resolvedOOPStats)
 
         // ─── Pre-computed card HTML strings ───
 
@@ -605,11 +633,14 @@ struct ReportGenerator {
         let packages = packageFiles.map { PackageSummary(name: $0.key, files: $0.value) }
             .sorted { $0.totalLines > $1.totalLines }
 
-        print("   Building \(packages.count) package sections...")
-
         var packageSections = ""
         var graphCounter = 0
         var packageGraphScripts = ""
+
+        if skipModules {
+            print("   Skipping Packages & Modules (--skip-modules)")
+        } else {
+        print("   Building \(packages.count) package sections...")
 
         for (pkgIdx, pkg) in packages.enumerated() {
             if (pkgIdx + 1) % 20 == 0 {
@@ -762,6 +793,7 @@ struct ReportGenerator {
 
             """
         }
+        } // end if !skipModules
 
         // ─── 4. Hotspots ───
         // In-degree = number of other files that import / reference this file
@@ -866,6 +898,9 @@ struct ReportGenerator {
                 .bs-badge-right { background: rgba(0,0,0,0.07); color: var(--text3); font-size: 9px; padding: 1px 5px; border-radius: 4px; margin-left: auto; padding-left: 6px; flex-shrink: 0; font-weight: 400; letter-spacing: 0.02em; }
                 .bs-badge { background: rgba(0,0,0,0.08); color: var(--text3); font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-left: 2px; font-weight: 400; }
                 .tag-private { background: #fce4ec; color: #c62828; }
+                .tag-pop { background: #e8f5e9; color: #2e7d32; }
+                .tag-oop { background: #fff3e0; color: #e65100; }
+                .tag-mixed { background: #f5f5f5; color: #757575; }
                 .private-warn { color: #c62828; font-size: 12px; margin: 4px 0 8px 0; }
                 .count { font-weight: 400; color: var(--text3); }
                 .import-group { margin-bottom: 16px; }
@@ -906,6 +941,14 @@ struct ReportGenerator {
                 .ap-file { font-family: 'SF Mono', Menlo, monospace; color: var(--accent); flex-shrink: 0; }
                 .ap-snippet { font-family: 'SF Mono', Menlo, monospace; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
                 .ap-author-badge { margin-left: auto; flex-shrink: 0; background: #e3f2fd; color: #1565c0; font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+                .arch-layers { display: flex; flex-direction: column; gap: 8px; }
+                .arch-layer {}
+                .layer-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+                .layer-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+                .layer-name { font-weight: 600; font-size: 13px; flex: 1; color: var(--text); }
+                .layer-count { font-size: 11px; color: var(--text3); white-space: nowrap; font-family: 'SF Mono', Menlo, monospace; }
+                .layer-bar-track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+                .layer-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
                 .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
                 .component-item { display: flex; align-items: center; gap: 10px; background: var(--bg); border-radius: 10px; padding: 10px 12px; }
                 .component-icon { font-size: 22px; flex-shrink: 0; }
@@ -1106,13 +1149,18 @@ struct ReportGenerator {
             </div>
             """ : "")
             <div class="card">
+                \(oopCardHTML)
+            </div>
+            <div class="card">
                 \(apCardHTML)
             </div>
+            \(skipModules ? "" : """
             <div class="card">
                 <h2>📦 Packages & Modules</h2>
                 <p class="subtitle">Showing files with ≥ 20 lines and at least one declaration. Graphs: type references between declarations. <span style="color:#007aff">●</span> class <span style="color:#34c759">●</span> struct <span style="color:#ff9500">●</span> enum <span style="color:#ff3b30">●</span> actor. Arrows from class/actor only.</p>
                 \(packageSections)
             </div>
+            """)
             <footer style="text-align:center; padding: 20px 0 10px; color: var(--text3); font-size: 12px;">
                 Generator: <a href="https://github.com/Exey/ArchSwiftScope" style="color: var(--accent); text-decoration: none;">ArchSwiftScope</a> · MIT License · Exey Panteleev
             </footer>
@@ -1268,6 +1316,150 @@ struct ReportGenerator {
         }
     }
 
+    // MARK: - OOP vs POP HTML
+
+    private func buildOOPvsPOPHTML(_ s: OOPvsPOPStats) -> String {
+        let pop = s.popScore
+        let markerPct = max(4, min(96, pop))
+
+        func accentColor(_ v: Int) -> String {
+            v >= 60 ? "#34c759" : v >= 40 ? "#ff9500" : "#ff3b30"
+        }
+        func miniBar(_ v: Double) -> String {
+            let w = Int(v * 100)
+            let color = v >= 0.65 ? "#34c759" : v >= 0.40 ? "#ff9500" : "#ff3b30"
+            return "<div style=\"display:flex;align-items:center;gap:6px\"><div style=\"flex:1;height:5px;background:var(--border);border-radius:3px;min-width:60px;overflow:hidden\"><div style=\"height:100%;width:\(w)%;background:\(color);border-radius:3px\"></div></div><span class=\"mono\" style=\"font-size:11px;color:var(--text3);min-width:28px;text-align:right\">\(w)%</span></div>"
+        }
+        func signal(_ v: Double) -> String {
+            if v >= 0.65 { return "<span class='tag tag-pop'>POP</span>" }
+            if v >= 0.40 { return "<span class='tag tag-mixed'>Mixed</span>" }
+            return "<span class='tag tag-oop'>OOP</span>"
+        }
+        func catBar(_ score: Int, _ label: String, _ weight: String) -> String {
+            let color = accentColor(score)
+            return """
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:7px">\
+            <span style="font-size:11px;color:var(--text3);min-width:160px">\(label)</span>\
+            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">\
+            <div style="height:100%;width:\(score)%;background:\(color);border-radius:3px"></div></div>\
+            <span class="mono" style="font-size:11px;min-width:32px;text-align:right;color:\(color)">\(score)%</span>\
+            <span style="font-size:10px;color:var(--text3);min-width:36px">\(weight)</span>\
+            </div>
+            """
+        }
+        func sectionHeader(_ title: String) -> String {
+            "<tr><td colspan='5' style=\"padding:10px 0 4px;font-size:11px;font-weight:600;color:var(--text3);letter-spacing:0.06em;text-transform:uppercase;border-top:2px solid var(--border)\">\(title)</td></tr>"
+        }
+        func row(_ n: Int, _ name: String, _ value: String, _ score: Double, _ inv: String = "") -> String {
+            let invTag = inv.isEmpty ? "" : " <span style=\"font-size:10px;color:var(--text3)\">\(inv)</span>"
+            let b = "border-top:1px solid var(--border)"
+            return "<tr><td class=\"mono\" style=\"color:var(--text3);\(b)\">\(n)</td><td style=\"\(b)\">\(name)\(invTag)</td><td class=\"mono\" style=\"\(b)\">\(value)</td><td style=\"\(b)\">\(miniBar(score))</td><td style=\"\(b)\">\(signal(score))</td></tr>"
+        }
+        func infoRow(_ name: String, _ value: String) -> String {
+            let b = "border-top:1px solid var(--border)"
+            return "<tr><td style=\"\(b)\"></td><td style=\"\(b);color:var(--text3)\">\(name)</td><td class=\"mono\" style=\"\(b);color:var(--text3)\">\(value)</td><td style=\"\(b)\"></td><td style=\"\(b)\"></td></tr>"
+        }
+
+        func naBar() -> String {
+            "<div style=\"display:flex;align-items:center;gap:6px\"><div style=\"flex:1;height:5px;background:var(--border);border-radius:3px;min-width:60px\"></div><span class=\"mono\" style=\"font-size:11px;color:var(--text3);min-width:28px;text-align:right\">N/A</span></div>"
+        }
+        func naRow(_ n: Int, _ name: String, _ reason: String) -> String {
+            let b = "border-top:1px solid var(--border)"
+            return "<tr><td class=\"mono\" style=\"color:var(--text3);\(b)\">\(n)</td><td style=\"\(b);color:var(--text3)\">\(name)</td><td class=\"mono\" style=\"\(b);color:var(--text3)\">\(reason)</td><td style=\"\(b)\">\(naBar())</td><td style=\"\(b);color:var(--text3)\">&mdash;</td></tr>"
+        }
+
+        let noProto = s.totalProtocols == 0
+        let protoDensityVal = "\(s.totalProtocols) protocols · \(s.totalClasses + s.totalStructs) types"
+        let implProtos     = s.singleConformerProtocols + s.multiConformerProtocols
+        let protoExtVal    = implProtos > 0 ? "\(s.protocolExtWithCode) / \(implProtos) implemented" : "no implemented protocols"
+        let assocVal       = "\(s.assocTypeCount) / \(s.totalProtocols) protocols"
+        let genericFuncVal = "\(s.genericFuncCount) in \(s.totalClasses + s.totalStructs) types"
+        let breadthVal     = "\(s.multiConformerProtocols) broad · \(s.singleConformerProtocols) single-impl · \(s.totalProtocols - s.multiConformerProtocols - s.singleConformerProtocols) untracked"
+        let conformDist    = "0: \(s.typesWithZeroConformances) · 1: \(s.typesWithOneConformance) · 2+: \(s.typesWithTwoPlusConformances)"
+        let protoHeader    = noProto ? "Protocol Design · 55% weight  (M1 only — no protocols defined)" : "Protocol Design · 55% weight"
+
+        let someUserVal    = "\(s.someUserDefinedCount) usages of user-defined protocols"
+        let protoCompVal   = "\(s.protocolCompositionCount) usages"
+
+        let protoRows: [String] = noProto ? [
+            sectionHeader(protoHeader),
+            row(1, "Protocol definitions",                    protoDensityVal, s.s_protocolDensity),
+            row(2, "Constrained generics",                    genericFuncVal,  s.s_genericFunc),
+            naRow(3, "Conformance breadth",                   "no protocols — N/A"),
+            naRow(4, "Protocol extensions with default impl", "no protocols — N/A"),
+            naRow(5, "<code>associatedtype</code> usage",     "no protocols — N/A"),
+            naRow(6, "<code>some</code> user-defined",        "no protocols — N/A"),
+            naRow(7, "Protocol composition (<code>A &amp; B</code>)", "no protocols — N/A"),
+            infoRow("↳ Per-type conformance distribution",    conformDist),
+        ] : [
+            sectionHeader(protoHeader),
+            row(1, "Protocol definitions",                       protoDensityVal, s.s_protocolDensity),
+            row(2, "Constrained generics",                       genericFuncVal,  s.s_genericFunc),
+            row(3, "Conformance breadth",                        breadthVal,      s.s_conformanceBreadth, "↑ 2+ = POP"),
+            row(4, "Protocol extensions with default impl",      protoExtVal,     s.s_protoExt),
+            row(5, "<code>associatedtype</code> usage",          assocVal,        s.s_assocType),
+            row(6, "<code>some</code> user-defined",             someUserVal,     s.s_someUser),
+            row(7, "Protocol composition (<code>A &amp; B</code>)", protoCompVal, s.s_protoComposition),
+            infoRow("↳ Per-type conformance distribution",       conformDist),
+            infoRow("↳ <code>some</code> stdlib / framework",
+                    "\(s.someFrameworkCount) usages  ·  SwiftUI idiom, weak signal"),
+        ]
+
+        let tbody = (protoRows + [
+            sectionHeader("Value Semantics · 30% weight"),
+            row(8,  "Struct vs Class ratio",
+                "\(s.totalStructs) structs · \(s.totalClasses) classes",  s.s_structRatio),
+            row(9,  "<code>final</code> keyword",
+                "\(s.finalClasses) / \(s.totalClasses) classes",          s.s_final),
+            row(10, "Enums with associated values",
+                "\(s.enumsWithAssocValues) / \(s.totalEnums) enums",      s.s_enumAssoc),
+            infoRow("↳ Extension count (informational)",
+                    "\(s.extensionCount) extensions"),
+
+            sectionHeader("Anti-inheritance · 15% weight"),
+            row(11, "Inheritance depth",
+                "avg \(String(format:"%.1f", s.avgInheritanceDepth)) · max \(s.maxInheritanceDepth) · \(s.deepInheritanceCount) deep ≥ 3",
+                s.s_inheritDepth, "↓ lower = POP"),
+            row(12, "<code>override</code> density",
+                "\(s.overrideCount) in \(s.totalClasses) classes",        s.s_overrideDensity, "↓ lower = POP"),
+            row(13, "NSObject inheritance",
+                "\(s.nsObjectCount) / \(s.totalClasses) classes",          s.s_nsObject, "↓ lower = POP"),
+
+            sectionHeader("Counter-signals"),
+            infoRow("⚠ Singletons (static shared / instance)",
+                    "\(s.singletonCount) found\(s.singletonCount > 0 ? " — OOP indicator" : "")"),
+        ]).joined()
+
+        let protoDesignLabel = noProto ? "Protocol Design (M1+generics)" : "Protocol Design"
+
+        return """
+        <h2>🧬 OOP vs POP</h2>
+        <p class="subtitle">Style signal across \(s.totalTypes) types · Protocol Design 55% · Value Semantics 30% · Anti-inheritance 15%</p>
+        <div style="margin:16px 0 24px">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:6px">
+            <span>◀ OOP</span><span>POP ▶</span>
+          </div>
+          <div style="position:relative;height:14px;margin-bottom:20px">
+            <div style="height:14px;border-radius:8px;background:linear-gradient(to right,#ff3b30 0%,#ff9500 40%,#34c759 100%)"></div>
+            <div style="position:absolute;top:-5px;left:\(markerPct)%;transform:translateX(-50%);width:3px;height:24px;background:white;border-radius:2px;box-shadow:0 1px 4px rgba(0,0,0,0.35)"></div>
+            <div style="position:absolute;top:-28px;left:\(markerPct)%;transform:translateX(-50%);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.1);color:\(accentColor(pop))">\(pop)% POP</div>
+          </div>
+          \(catBar(s.protoDesignScore,    protoDesignLabel,     "W=55%"))
+          \(catBar(s.valueSemanticsScore, "Value Semantics",    "W=30%"))
+          \(catBar(s.antiInheritScore,    "Anti-inheritance",   "W=15%"))
+        </div>
+        <div class="table-wrap">
+        <table class="file-table" style="table-layout:fixed">
+          <colgroup>
+            <col style="width:24px"><col style="width:40%"><col><col style="width:110px"><col style="width:70px">
+          </colgroup>
+          <thead><tr><th>#</th><th>Metric</th><th>Value</th><th>POP Score</th><th>Signal</th></tr></thead>
+          <tbody>\(tbody)</tbody>
+        </table>
+        </div>
+        """
+    }
+
     // MARK: - Architecture Helpers
 
     private func classifyLayer(_ filePath: String) -> String {
@@ -1276,7 +1468,7 @@ struct ReportGenerator {
         if path.contains("/test") || name.hasSuffix("test") || name.hasSuffix("tests") || name.hasSuffix("spec") || name.hasSuffix("mock") || name.hasSuffix("stub") || name.hasSuffix("fake") { return "Tests" }
         if path.contains("/api/") || path.contains("/network") || path.contains("/service/") || path.contains("/services/") || path.contains("/endpoint") || name.hasSuffix("api") || name.hasSuffix("service") || name.hasSuffix("client") || name.hasSuffix("endpoint") || name.hasSuffix("request") || name.hasSuffix("response") { return "API / Networking" }
         if path.contains("/model/") || path.contains("/models/") || path.contains("/entity/") || path.contains("/entities/") || path.contains("/domain/") || name.hasSuffix("model") || name.hasSuffix("entity") || name.hasSuffix("dto") { return "Models" }
-        if path.contains("/viewmodel") || path.contains("/presenter") || path.contains("/interactor") || name.hasSuffix("viewmodel") || name.hasSuffix("presenter") || name.hasSuffix("interactor") || name.hasSuffix("coordinator") { return "Presentation" }
+        if path.contains("/viewmodel") || path.contains("/presenter") || path.contains("/interactor") || name.hasSuffix("viewmodel") || name.hasSuffix("presenter") || name.hasSuffix("interactor") || name.hasSuffix("coordinator") { return "UI / Views" }
         if path.contains("/view/") || path.contains("/views/") || path.contains("/ui/") || path.contains("/scene/") || path.contains("/scenes/") || name.hasSuffix("view") || name.hasSuffix("screen") || name.hasSuffix("cell") || name.hasSuffix("controller") || name.hasSuffix("viewcontroller") { return "UI / Views" }
         if path.contains("/storage") || path.contains("/persistence") || path.contains("/database") || path.contains("/repository") || name.hasSuffix("repository") || name.hasSuffix("store") || name.hasSuffix("storage") || name.hasSuffix("cache") || name.hasSuffix("dao") { return "Persistence" }
         if path.contains("/auth") || name.hasSuffix("auth") || name.hasSuffix("authenticator") || name.hasSuffix("authorization") { return "Auth" }
