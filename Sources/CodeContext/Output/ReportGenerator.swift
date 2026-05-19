@@ -486,7 +486,9 @@ struct ReportGenerator {
                 let parts = stat.path.components(separatedBy: "/")
                 let folder = parts.count >= 2 ? parts.dropLast().suffix(2).joined(separator: "/") + "/" : ""
                 let folderHtml = folder.isEmpty ? "" : "<span style='color:var(--text3);font-weight:400'>\(esc(folder))</span>"
-                return "<tr><td>\(folderHtml)<strong>\(esc(name))</strong></td><td class='mono' style='white-space:nowrap'>\(stat.changeCount)</td></tr>"
+                let absPath = repoPath.isEmpty ? stat.path : "\(repoPath)/\(stat.path)"
+                let fileLink = vsLink(path: absPath, label: "<strong>\(esc(name))</strong>")
+                return "<tr><td>\(folderHtml)\(fileLink)</td><td class='mono' style='white-space:nowrap'>\(stat.changeCount)</td></tr>"
             }.joined(separator: "\n")
             return "<div class='table-wrap'><table class='file-table'><thead><tr><th>File</th><th>Changes</th></tr></thead><tbody>\(rows)</tbody></table></div>"
         }()
@@ -682,7 +684,8 @@ struct ReportGenerator {
                     let folderIdx = max(0, pathComps.count - 2)
                     let folder = pathComps.count >= 2 ? pathComps[folderIdx] + "/" : ""
                     let folderHtml = folder.isEmpty ? "" : "<span style='color:var(--text3);font-weight:400'>\(esc(folder))</span>"
-                    return "<tr><td>\(folderHtml)<strong>\(esc(file.fileName))</strong>\(desc)</td><td class='mono'>\(file.lineCount)</td><td>\(decls.count)</td><td class='decl-tags'>\(declStr)</td></tr>"
+                    let fileLink = vsLink(path: file.filePath, label: "<strong>\(esc(file.fileName))</strong>")
+                    return "<tr><td>\(folderHtml)\(fileLink)\(desc)</td><td class='mono'>\(file.lineCount)</td><td>\(decls.count)</td><td class='decl-tags'>\(declStr)</td></tr>"
                 }.joined(separator: "\n")
             }
 
@@ -818,7 +821,8 @@ struct ReportGenerator {
             let pathComps = item.path.components(separatedBy: "/")
             let folderPath = pathComps.count >= 2 ? pathComps.dropLast().suffix(3).joined(separator: "/") + "/" : ""
             let uses = inDegree[item.path] ?? 0
-            return "<tr><td><span style='color:var(--text3)'>\(esc(folderPath))</span><strong>\(esc(fileName))</strong></td><td class='mono'>\(uses)</td><td class='mono'>\(lineCount)</td><td class='mono'>\(declCount)</td><td><a href='#pkg-\(pkgAnchor)' class='tag tag-local pkg-link-inline' style='font-size:11px'>\(esc(pkg))</a></td></tr>"
+            let fileLabel = "<span style='color:var(--text3)'>\(esc(folderPath))</span><strong>\(esc(fileName))</strong>"
+            return "<tr><td>\(vsLink(path: item.path, label: fileLabel))</td><td class='mono'>\(uses)</td><td class='mono'>\(lineCount)</td><td class='mono'>\(declCount)</td><td><a href='#pkg-\(pkgAnchor)' class='tag tag-local pkg-link-inline' style='font-size:11px'>\(esc(pkg))</a></td></tr>"
         }.joined(separator: "\n")
 
         // ─── 5. Summary ───
@@ -902,6 +906,8 @@ struct ReportGenerator {
                 .pkg-link:hover { background: #bbdefb; }
                 .pkg-major { border: 2px solid var(--accent); font-weight: 600; }
                 .pkg-link-inline { text-decoration: none; cursor: pointer; }
+                .vs-link { text-decoration: none; color: inherit; }
+                .vs-link:hover { text-decoration: underline; color: var(--accent); }
                 .pkg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
                 .bs-badge-right { background: rgba(0,0,0,0.07); color: var(--text3); font-size: 9px; padding: 1px 5px; border-radius: 4px; margin-left: auto; padding-left: 6px; flex-shrink: 0; font-weight: 400; letter-spacing: 0.02em; }
                 .bs-badge { background: rgba(0,0,0,0.08); color: var(--text3); font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-left: 2px; font-weight: 400; }
@@ -1084,7 +1090,9 @@ struct ReportGenerator {
                     } else {
                         heaviestHTML = top3.map { f in
                             let sz = self.formatFileSize(f.sizeBytes)
-                            return "<div style='margin:2px 0'><span class='bs-badge-right' style='margin-left:0;margin-right:6px'>\(sz)</span><span style='font-size:12px'>\(esc(f.relativePath))</span></div>"
+                            let absPath = repoPath.isEmpty ? f.relativePath : "\(repoPath)/\(f.relativePath)"
+                            let pathLink = self.vsLink(path: absPath, label: "<span style='font-size:12px'>\(esc(f.relativePath))</span>")
+                            return "<div style='margin:2px 0'><span class='bs-badge-right' style='margin-left:0;margin-right:6px'>\(sz)</span>\(pathLink)</div>"
                         }.joined()
                     }
                     let emoji = typeEmoji(ext)
@@ -1151,7 +1159,7 @@ struct ReportGenerator {
                         let fileName = URL(fileURLWithPath: fn.filePath).lastPathComponent
                         let pkg = fileMap[fn.filePath]?.packageName.isEmpty == false ? fileMap[fn.filePath]!.packageName : "App"
                         let anchor = pkg.replacingOccurrences(of: " ", with: "-")
-                        return "<tr><td><code>\(esc(fn.name))()</code></td><td class='mono'>\(fn.lineCount)</td><td>\(esc(fileName))</td><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(pkg))</a></td></tr>"
+                        return "<tr><td><code>\(esc(fn.name))()</code></td><td class='mono'>\(fn.lineCount)</td><td>\(vsLink(path: fn.filePath, label: esc(fileName), line: fn.startLine))</td><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(pkg))</a></td></tr>"
                     }.joined(separator: "\n"))</tbody>
                 </table></div>
             </div>
@@ -1269,6 +1277,11 @@ struct ReportGenerator {
          .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
     }
 
+    private func vsLink(path: String, label: String, line: Int? = nil) -> String {
+        let href = line.map { "vscode://file/\(path):\($0)" } ?? "vscode://file/\(path)"
+        return "<a href=\"\(href)\" class=\"vs-link\" title=\"Open in VS Code\">\(label)</a>"
+    }
+
     private func formatFileSize(_ bytes: Int) -> String {
         if bytes >= 1_048_576 {
             return String(format: "%.1f MB", Double(bytes) / 1_048_576.0)
@@ -1310,7 +1323,8 @@ struct ReportGenerator {
                 html += "<div class=\"ap-check-desc\">\(esc(r.check.description))</div>"
                 for v in r.violations {
                     let authorBadge = v.author.map { "<span class=\"ap-author-badge\">\(esc($0))</span>" } ?? ""
-                    html += "<div class=\"ap-violation\"><span class=\"ap-file\">\(esc(v.file)):\(v.line)</span><span class=\"ap-snippet\">\(esc(v.snippet))</span>\(authorBadge)</div>"
+                    let fileRef = vsLink(path: v.fullPath, label: "\(esc(v.file)):\(v.line)", line: v.line)
+                    html += "<div class=\"ap-violation\"><span class=\"ap-file\">\(fileRef)</span><span class=\"ap-snippet\">\(esc(v.snippet))</span>\(authorBadge)</div>"
                 }
                 html += "</div></div>"
             }

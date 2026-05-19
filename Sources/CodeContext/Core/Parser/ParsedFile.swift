@@ -44,6 +44,7 @@ struct FunctionInfo: Codable, Sendable {
     let name: String
     let lineCount: Int
     let filePath: String
+    let startLine: Int
 }
 
 // MARK: - Parsed File

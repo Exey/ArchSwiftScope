@@ -149,7 +149,7 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
                 if braceDepth <= 0 && trimmed.contains("}") {
                     let length = lineCount - funcStartLine + 1
                     if let name = curFuncName, length > (bestFunc?.lineCount ?? 0) {
-                        bestFunc = FunctionInfo(name: name, lineCount: length, filePath: file.path)
+                        bestFunc = FunctionInfo(name: name, lineCount: length, filePath: file.path, startLine: funcStartLine)
                     }
                     inFunc = false
                     curFuncName = nil
