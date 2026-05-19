@@ -595,12 +595,15 @@ struct ReportGenerator {
                 archLinks.append(ArchLink(source: src, target: tgt))
             }
         }
-        let archNodes = archFileCount.map { ArchNode(id: $0.key, label: $0.key, val: $0.value) }
+        let archConnectedIds: Set<String> = Set(archLinks.flatMap { [$0.source, $0.target] })
+        let archNodes = archFileCount
+            .filter { archConnectedIds.contains($0.key) }
+            .map { ArchNode(id: $0.key, label: $0.key, val: $0.value) }
             .sorted { $0.val > $1.val }
         let archGraphJSON = (try? String(data: JSONEncoder().encode(
             ArchGraphData(nodes: archNodes, links: archLinks)
         ), encoding: .utf8)) ?? "{\"nodes\":[],\"links\":[]}"
-        let showArchGraph = archNodes.count >= 2
+        let showArchGraph = archNodes.count >= 2 && !archLinks.isEmpty
         let archNodeCount = archNodes.count
         let archLinkDist = archNodeCount > 100 ? 220 : 120
         let archChargeStr = archNodeCount > 100 ? -600 : -300
@@ -1240,7 +1243,9 @@ struct ReportGenerator {
             }
         }
 
-        return GraphData(nodes: nodes, links: links)
+        let connectedIds: Set<String> = Set(links.flatMap { [$0.source, $0.target] })
+        let connectedNodes = nodes.filter { connectedIds.contains($0.id) }
+        return GraphData(nodes: connectedNodes, links: links)
     }
 
     private func fastContainsType(_ content: String, typeName: String) -> Bool {
