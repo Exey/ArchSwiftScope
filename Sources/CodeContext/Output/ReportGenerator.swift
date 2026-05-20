@@ -226,6 +226,7 @@ struct ReportGenerator {
         repoPath: String = "",
         apResults: [APResult] = [],
         oopStats: OOPvsPOPStats? = nil,
+        securityScore: SecurityScore? = nil,
         skipModules: Bool = false
     ) throws {
         // Filter out monkey-patched library files
@@ -423,12 +424,16 @@ struct ReportGenerator {
             return filteredAppleFrameworks.sorted().map { "<span class='tag tag-apple'>\($0)</span>" }.joined(separator: " ")
         }()
 
-        // ─── Anti-patterns ───
-        print("   Running anti-pattern checks...")
+        // ─── Security Risks ───
+        print("   Running security checks...")
         let resolvedAPResults = apResults.isEmpty
-            ? AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
+            ? SecurityAnalyzer.run(files: projectFiles, repoPath: repoPath)
             : apResults
-        let apCardHTML = buildAntipatternHTML(resolvedAPResults)
+        let swiftFileCountForScore = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
+        let resolvedSecurityScore = securityScore
+            ?? SecurityAnalyzer.computeScore(resolvedAPResults, fileCount: swiftFileCountForScore)
+        let apCardHTML = buildSecurityHTML(resolvedAPResults, score: resolvedSecurityScore)
+        let securityScoreJSONLiteral = securityScoreJSON(resolvedSecurityScore)
 
         // ─── OOP vs POP ───
         let resolvedOOPStats = oopStats ?? OOPvsPOPAnalyzer.analyze(files: projectFiles)
@@ -955,6 +960,46 @@ struct ReportGenerator {
                 .ap-file { font-family: 'SF Mono', Menlo, monospace; color: var(--accent); flex-shrink: 0; }
                 .ap-snippet { font-family: 'SF Mono', Menlo, monospace; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
                 .ap-author-badge { margin-left: auto; flex-shrink: 0; background: #e3f2fd; color: #1565c0; font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+                /* ── Security Risks ── */
+                .sec-toprow { display: flex; gap: 24px; align-items: stretch; margin: 8px 0 22px; flex-wrap: wrap; }
+                .sec-gauge-wrap { display: flex; flex-direction: column; align-items: center; padding: 14px 18px; background: var(--bg); border-radius: 12px; flex: 0 0 240px; }
+                .sec-gauge-svg { width: 200px; height: 124px; }
+                .sec-gauge-label { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--text3); letter-spacing: 0.08em; margin-top: 6px; }
+                .sec-gauge-val { font-size: 30px; font-weight: 700; margin-top: 2px; line-height: 1.1; }
+                .sec-gauge-desc { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--text3); margin-top: 12px; line-height: 1.9; text-align: left; align-self: stretch; }
+                .sec-gauge-desc .rng { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+                .sec-gauge-desc .cur { font-weight: 700; color: var(--text); }
+                .sec-weight-bars { flex: 1 1 360px; min-width: 320px; }
+                .sec-weight-title { font-size: 11px; font-weight: 600; color: var(--text3); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 10px; }
+                .sec-wb-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+                .sec-wb-name { font-size: 12px; color: var(--text2); min-width: 230px; display: flex; align-items: center; gap: 5px; }
+                .sec-wb-num { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 4px; background: var(--border); color: var(--text3); font-size: 9px; font-weight: 700; flex-shrink: 0; }
+                .sec-wb-track { flex: 1; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; min-width: 60px; }
+                .sec-wb-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+                .sec-wb-na-fill { background: repeating-linear-gradient(45deg, var(--border), var(--border) 4px, transparent 4px, transparent 8px); }
+                .sec-wb-pts { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; font-weight: 600; min-width: 56px; text-align: right; }
+                .sec-wb-na { font-size: 10px; color: var(--text3); font-style: italic; min-width: 56px; text-align: right; }
+                .sec-wb-weight { font-family: 'SF Mono', Menlo, monospace; font-size: 10px; color: var(--text3); min-width: 42px; text-align: right; }
+                .sec-detail { margin-top: 8px; }
+                .sec-sec { border: 1px solid var(--border); border-radius: 10px; padding: 0; margin-bottom: 12px; overflow: hidden; }
+                .sec-sec-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+                .sec-sec-num { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 5px; background: var(--text2); color: #fff; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+                .sec-sec-icon { font-size: 16px; }
+                .sec-sec-title { font-weight: 600; font-size: 14px; }
+                .sec-sec-weight { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--text3); margin-left: 6px; }
+                .sec-sec-risk { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; font-weight: 600; margin-left: auto; }
+                .sec-sec-na { color: var(--text3); font-weight: 400; font-style: italic; }
+                .sec-sec-blurb { font-size: 12px; color: var(--text3); padding: 8px 14px 4px; line-height: 1.6; }
+                .sec-sec-empty { font-size: 12px; color: var(--text3); padding: 4px 14px 14px; font-style: italic; }
+                .sec-check { padding: 6px 14px 4px; }
+                .sec-check-row { display: flex; align-items: center; gap: 8px; }
+                .sec-check-status { font-weight: 700; width: 14px; text-align: center; flex-shrink: 0; }
+                .sec-check-name { font-size: 13px; font-weight: 500; min-width: 230px; flex-shrink: 0; }
+                .sec-check-track { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; min-width: 50px; }
+                .sec-check-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+                .sec-check-count { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; font-weight: 600; min-width: 90px; text-align: right; }
+                .sec-check-desc { font-size: 12px; color: var(--text3); margin: 6px 0 8px 22px; line-height: 1.6; }
+                .sec-violations { margin: 0 0 8px 22px; }
                 .arch-layers { display: flex; flex-direction: column; gap: 8px; }
                 .arch-layer {}
                 .layer-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -997,6 +1042,12 @@ struct ReportGenerator {
                     .tag { font-size: 11px; padding: 2px 6px; }
                     .hotspot-item { flex-direction: column; gap: 4px; }
                     .pkg-graph-container { height: 300px; }
+                    .sec-toprow { flex-direction: column; gap: 14px; }
+                    .sec-gauge-wrap { flex: 1 1 auto; }
+                    .sec-weight-bars { min-width: 0; }
+                    .sec-wb-name { min-width: 150px; font-size: 11px; }
+                    .sec-check-name { min-width: 130px; font-size: 12px; }
+                    .sec-sec-head { gap: 6px; }
                 }
             </style>
             <script src="https://unpkg.com/force-graph"></script>
@@ -1040,6 +1091,15 @@ struct ReportGenerator {
                 </div>
             </div>
             <div class="card">
+                \(architectureCardHTML)
+            </div>
+            <div class="card">
+                \(oopCardHTML)
+            </div>
+            <div class="card">
+                \(apCardHTML)
+            </div>
+            <div class="card">
                 <h2>🐙 Git Analysis</h2>
                 \(!teamRows.isEmpty ? """
                 <div class="sub-card">
@@ -1061,8 +1121,60 @@ struct ReportGenerator {
                 </div>
             </div>
             <div class="card">
-                \(architectureCardHTML)
+                <h2>🔥 Hot Zones</h2>
+                <p class="subtitle">Files imported or referenced by the most other files — the highest-leverage nodes in the codebase.</p>
+                <div class="table-wrap"><table class="file-table">
+                    <thead><tr><th>File</th><th>Uses</th><th>Lines</th><th>Decl</th><th>Package</th></tr></thead>
+                    <tbody>\(hotspotRows)</tbody>
+                </table></div>
             </div>
+            \(!topLongestFuncs.isEmpty ? """
+            <div class="card">
+                <h2>📏 Longest Functions</h2>
+                <div class="table-wrap"><table class="file-table">
+                    <thead><tr><th>Function</th><th>Lines</th><th>File</th><th>Module</th></tr></thead>
+                    <tbody>\(topLongestFuncs.map { fn -> String in
+                        let fileName = URL(fileURLWithPath: fn.filePath).lastPathComponent
+                        let pkg = fileMap[fn.filePath]?.packageName.isEmpty == false ? fileMap[fn.filePath]!.packageName : "App"
+                        let anchor = pkg.replacingOccurrences(of: " ", with: "-")
+                        return "<tr><td><code>\(vsLink(path: fn.filePath, label: esc(fn.name) + "()", line: fn.startLine))</code></td><td class='mono'>\(fn.lineCount)</td><td>\(vsLink(path: fn.filePath, label: esc(fileName), line: fn.startLine))</td><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(pkg))</a></td></tr>"
+                    }.joined(separator: "\n"))</tbody>
+                </table></div>
+            </div>
+            """ : "")
+            <div class="card">
+                <h2>📋 Module Insights</h2>
+                \(!topPenetration.isEmpty ? """
+                <h3>🔗 Package Penetration</h3>
+                <p class="subtitle">Modules imported by the most other packages — high-penetration modules are foundational dependencies.</p>
+                <div class="table-wrap"><table class="file-table">
+                    <thead><tr><th>Module</th><th>Imported by</th><th>Dependent Packages</th></tr></thead>
+                    <tbody>\(topPenetration.map { (name, dependents) -> String in
+                        let anchor = name.replacingOccurrences(of: " ", with: "-")
+                        let depList = dependents.sorted().prefix(5).joined(separator: ", ") + (dependents.count > 5 ? " …" : "")
+                        return "<tr><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(name))</a></td><td class='mono'>\(dependents.count)</td><td style='color:var(--text3);font-size:12px'>\(esc(depList))</td></tr>"
+                    }.joined(separator: "\n"))</tbody>
+                </table></div>
+                """ : "")
+                <h3>📝 TODO / FIXME</h3>
+                \(topTodoModules.isEmpty ? "<p style=\"color: var(--text3)\">No TODO or FIXME comments found across the codebase.</p>" : """
+                <div class="table-wrap"><table class="file-table">
+                    <thead><tr><th>Module</th><th>TODO</th><th>FIXME</th><th>Total</th></tr></thead>
+                    <tbody>\(topTodoModules.map { (name, todos) -> String in
+                        let fixmes = moduleFixmes[name] ?? 0
+                        let anchor = name.replacingOccurrences(of: " ", with: "-")
+                        return "<tr><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(name))</a></td><td>\(todos)</td><td>\(fixmes)</td><td><strong>\(todos + fixmes)</strong></td></tr>"
+                    }.joined(separator: "\n"))</tbody>
+                </table></div>
+                """)
+            </div>
+            \(skipModules ? "" : """
+            <div class="card">
+                <h2>📦 Packages & Modules</h2>
+                <p class="subtitle">Showing files with ≥ 20 lines and at least one declaration. Graphs: type references between declarations. <span style="color:#007aff">●</span> class <span style="color:#34c759">●</span> struct <span style="color:#ff9500">●</span> enum <span style="color:#ff3b30">●</span> actor. Arrows from class/actor only.</p>
+                \(packageSections)
+            </div>
+            """)
             \(metadata.assets.totalSizeBytes > 0 ? {
                 let a = metadata.assets
                 let totalMB = String(format: "%.1f", Double(a.totalSizeBytes) / 1_048_576.0)
@@ -1116,72 +1228,62 @@ struct ReportGenerator {
             </div>
             """
             }() : "")
-            <div class="card">
-                <h2>🔥 Hot Zones</h2>
-                <p class="subtitle">Files imported or referenced by the most other files — the highest-leverage nodes in the codebase.</p>
-                <div class="table-wrap"><table class="file-table">
-                    <thead><tr><th>File</th><th>Uses</th><th>Lines</th><th>Decl</th><th>Package</th></tr></thead>
-                    <tbody>\(hotspotRows)</tbody>
-                </table></div>
-            </div>
-            <div class="card">
-                <h2>📋 Module Insights</h2>
-                \(!topPenetration.isEmpty ? """
-                <h3>🔗 Package Penetration</h3>
-                <p class="subtitle">Modules imported by the most other packages — high-penetration modules are foundational dependencies.</p>
-                <div class="table-wrap"><table class="file-table">
-                    <thead><tr><th>Module</th><th>Imported by</th><th>Dependent Packages</th></tr></thead>
-                    <tbody>\(topPenetration.map { (name, dependents) -> String in
-                        let anchor = name.replacingOccurrences(of: " ", with: "-")
-                        let depList = dependents.sorted().prefix(5).joined(separator: ", ") + (dependents.count > 5 ? " …" : "")
-                        return "<tr><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(name))</a></td><td class='mono'>\(dependents.count)</td><td style='color:var(--text3);font-size:12px'>\(esc(depList))</td></tr>"
-                    }.joined(separator: "\n"))</tbody>
-                </table></div>
-                """ : "")
-                <h3>📝 TODO / FIXME</h3>
-                \(topTodoModules.isEmpty ? "<p style=\"color: var(--text3)\">No TODO or FIXME comments found across the codebase.</p>" : """
-                <div class="table-wrap"><table class="file-table">
-                    <thead><tr><th>Module</th><th>TODO</th><th>FIXME</th><th>Total</th></tr></thead>
-                    <tbody>\(topTodoModules.map { (name, todos) -> String in
-                        let fixmes = moduleFixmes[name] ?? 0
-                        let anchor = name.replacingOccurrences(of: " ", with: "-")
-                        return "<tr><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(name))</a></td><td>\(todos)</td><td>\(fixmes)</td><td><strong>\(todos + fixmes)</strong></td></tr>"
-                    }.joined(separator: "\n"))</tbody>
-                </table></div>
-                """)
-            </div>
-            \(!topLongestFuncs.isEmpty ? """
-            <div class="card">
-                <h2>📏 Longest Functions</h2>
-                <div class="table-wrap"><table class="file-table">
-                    <thead><tr><th>Function</th><th>Lines</th><th>File</th><th>Module</th></tr></thead>
-                    <tbody>\(topLongestFuncs.map { fn -> String in
-                        let fileName = URL(fileURLWithPath: fn.filePath).lastPathComponent
-                        let pkg = fileMap[fn.filePath]?.packageName.isEmpty == false ? fileMap[fn.filePath]!.packageName : "App"
-                        let anchor = pkg.replacingOccurrences(of: " ", with: "-")
-                        return "<tr><td><code>\(esc(fn.name))()</code></td><td class='mono'>\(fn.lineCount)</td><td>\(vsLink(path: fn.filePath, label: esc(fileName), line: fn.startLine))</td><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(pkg))</a></td></tr>"
-                    }.joined(separator: "\n"))</tbody>
-                </table></div>
-            </div>
-            """ : "")
-            <div class="card">
-                \(oopCardHTML)
-            </div>
-            <div class="card">
-                \(apCardHTML)
-            </div>
-            \(skipModules ? "" : """
-            <div class="card">
-                <h2>📦 Packages & Modules</h2>
-                <p class="subtitle">Showing files with ≥ 20 lines and at least one declaration. Graphs: type references between declarations. <span style="color:#007aff">●</span> class <span style="color:#34c759">●</span> struct <span style="color:#ff9500">●</span> enum <span style="color:#ff3b30">●</span> actor. Arrows from class/actor only.</p>
-                \(packageSections)
-            </div>
-            """)
             <footer style="text-align:center; padding: 20px 0 10px; color: var(--text3); font-size: 12px;">
                 Generator: <a href="https://github.com/Exey/ArchSwiftScope" style="color: var(--accent); text-decoration: none;">ArchSwiftScope</a> · MIT License · Exey Panteleev
             </footer>
         </div>
         <script>
+        window.SECURITY_DATA = \(securityScoreJSONLiteral);
+        (function(){
+            var D = window.SECURITY_DATA;
+            var svg = document.getElementById('sec-gauge-svg');
+            if (!svg || !D) return;
+
+            // Half-gauge geometry.
+            var r = 80, cx = 100, cy = 104;
+            var ns = 'http://www.w3.org/2000/svg';
+
+            // Background arc (left → right semicircle).
+            var bg = document.createElementNS(ns, 'path');
+            bg.setAttribute('d', 'M ' + (cx - r) + ',' + cy + ' A ' + r + ',' + r + ' 0 0 1 ' + (cx + r) + ',' + cy);
+            bg.setAttribute('fill', 'none');
+            bg.setAttribute('stroke', '#e0e0e0');
+            bg.setAttribute('stroke-width', '16');
+            bg.setAttribute('stroke-linecap', 'round');
+            svg.appendChild(bg);
+
+            // Foreground arc proportional to score / 1000.
+            var pct = Math.min(Math.max(D.score / 1000, 0.001), 0.999);
+            var endAngle = Math.PI * (1 - pct);
+            var ex = cx + r * Math.cos(endAngle);
+            var ey = cy - r * Math.sin(endAngle);
+            var col = pct < 0.40 ? '#5a8a7a' : pct < 0.65 ? '#c0a030' : '#c05040';
+            var fg = document.createElementNS(ns, 'path');
+            fg.setAttribute('d', 'M ' + (cx - r) + ',' + cy + ' A ' + r + ',' + r + ' 0 0 1 ' + ex.toFixed(2) + ',' + ey.toFixed(2));
+            fg.setAttribute('fill', 'none');
+            fg.setAttribute('stroke', col);
+            fg.setAttribute('stroke-width', '16');
+            fg.setAttribute('stroke-linecap', 'round');
+            svg.appendChild(fg);
+
+            // Band legend with current-band marker.
+            var ranges = [
+                { lo: 0,   hi: 199,  col: '#5a8a7a', label: 'Hardened' },
+                { lo: 200, hi: 499,  col: '#a0a030', label: 'Minor exposure' },
+                { lo: 500, hi: 799,  col: '#c0a030', label: 'Elevated risk' },
+                { lo: 800, hi: 1000, col: '#c05040', label: 'Critical exposure' }
+            ];
+            var desc = '';
+            for (var i = 0; i < ranges.length; i++) {
+                var rg = ranges[i];
+                var cur = D.score >= rg.lo && D.score <= rg.hi;
+                desc += '<div' + (cur ? ' class="cur"' : '') + '>'
+                      + '<span class="rng" style="background:' + rg.col + '"></span>'
+                      + rg.lo + '–' + rg.hi + ': ' + rg.label + (cur ? ' ◂' : '') + '</div>';
+            }
+            var el = document.getElementById('sec-gauge-desc');
+            if (el) el.innerHTML = desc;
+        })();
         \(packageGraphScripts)
         </script>
         </body>
@@ -1292,44 +1394,209 @@ struct ReportGenerator {
         }
     }
 
-    // MARK: - Anti-pattern HTML
+    // MARK: - Security Risks HTML
 
-    private func buildAntipatternHTML(_ results: [APResult]) -> String {
+    /// Serializes the security score into a JS object literal consumed by the gauge script.
+    private func securityScoreJSON(_ score: SecurityScore) -> String {
+        let cats = score.categories.map { c -> String in
+            "{id:\(c.category.rawValue),name:\"\(jsEsc(c.category.title))\",risk:\(c.riskPercent),points:\(c.points),weight:\(c.weight),assessed:\(c.notAssessed ? "false" : "true")}"
+        }.joined(separator: ",")
+        return "{score:\(score.total),cats:[\(cats)]}"
+    }
+
+    private func buildSecurityHTML(_ results: [APResult], score: SecurityScore) -> String {
         let passed = results.filter { $0.passed }
         let failed = results.filter { !$0.passed }
-        var html = "<h2>⚠️ Anti-patterns <span style=\"color:var(--text3);font-size:14px;font-weight:400\">(\(results.count) checks)</span></h2>"
 
+        // ── Header: gauge (left) + 13-category weight bars (right) ──
+        var header = "<h2>🚨 Security Risks <span style=\"color:var(--text3);font-size:14px;font-weight:400\">(\(results.count) active checks · index 0–1000)</span></h2>"
+        header += "<p class=\"subtitle\">Higher index = more risk. Index aggregates 14 weighted categories; each category's risk scales with violation density. Categories without active checks are shown as <em>not assessed</em>.</p>"
+
+        // Left column: gauge placeholder (drawn by JS) + band legend.
+        let gaugeBlock = """
+        <div class="sec-gauge-wrap">
+          <svg class="sec-gauge-svg" id="sec-gauge-svg" viewBox="0 0 200 124"></svg>
+          <div class="sec-gauge-label">DANGER INDEX</div>
+          <div class="sec-gauge-val" id="sec-gauge-val">\(score.total) / 1000</div>
+          <div class="sec-gauge-desc" id="sec-gauge-desc"></div>
+        </div>
+        """
+
+        // Right column: one weighted bar per category (risk %, weight, points).
+        let catBars = score.categories.map { c -> String in secCategoryBar(c) }.joined()
+        let weightBars = """
+        <div class="sec-weight-bars">
+          <div class="sec-weight-title">Category Weights → 1000 Index</div>
+          \(catBars)
+        </div>
+        """
+
+        let topRow = """
+        <div class="sec-toprow">
+          \(gaugeBlock)
+          \(weightBars)
+        </div>
+        """
+
+        // ── Pass / fail summary ──
+        var summary = ""
         if !passed.isEmpty {
-            html += "<div class=\"ap-summary\"><span class=\"ap-pass-badge\">✓ \(passed.count) passed</span></div>"
-            html += "<div class=\"ap-passed-list\">"
-            for r in passed {
-                html += "<div class=\"ap-passed-item\"><span style=\"color:#34c759\">✓</span><span class=\"ap-lang-badge\">SWIFT</span>\(apPriBadge(r.check.priority))<span>\(esc(r.check.name))</span></div>"
+            summary += "<div class=\"ap-summary\"><span class=\"ap-pass-badge\">✓ \(passed.count) passed</span><span class=\"ap-fail-badge\">✗ \(failed.count) failed</span></div>"
+        } else {
+            summary += "<div class=\"ap-summary\"><span class=\"ap-fail-badge\">✗ \(failed.count) failed</span></div>"
+        }
+
+        // ── Per-category detail (OOP-vs-POP-style bars + violations) ──
+        // Group results by category, preserving the 1...13 order.
+        var resultsByCategory: [SecurityCategory: [APResult]] = [:]
+        for r in results { resultsByCategory[r.check.category, default: []].append(r) }
+        let scoreByCategory = Dictionary(uniqueKeysWithValues: score.categories.map { ($0.category, $0) })
+
+        var detail = "<div class=\"sec-detail\">"
+        for category in SecurityCategory.allCases.sorted(by: { $0.rawValue < $1.rawValue }) {
+            let cs = scoreByCategory[category]
+            detail += secCategorySection(
+                category: category,
+                results: resultsByCategory[category] ?? [],
+                catScore: cs
+            )
+        }
+        detail += "</div>"
+
+        return header + topRow + summary + detail
+    }
+
+    /// A single weighted bar in the header's right-hand column.
+    private func secCategoryBar(_ c: CategoryScore) -> String {
+        let cat = c.category
+        let riskColor = secRiskColor(c.riskPercent)
+        let fillW = max(0, min(100, c.riskPercent))
+        let valueText: String
+        let barFill: String
+        if c.notAssessed {
+            valueText = "<span class=\"sec-wb-na\">not assessed</span>"
+            barFill = "<div class=\"sec-wb-fill sec-wb-na-fill\" style=\"width:100%\"></div>"
+        } else {
+            valueText = "<span class=\"sec-wb-pts\" style=\"color:\(riskColor)\">\(c.points)/\(c.weight)</span>"
+            barFill = "<div class=\"sec-wb-fill\" style=\"width:\(fillW)%;background:\(riskColor)\"></div>"
+        }
+        return """
+        <div class="sec-wb-row">
+          <span class="sec-wb-name"><span class="sec-wb-num">\(cat.rawValue)</span>\(cat.icon) \(esc(cat.title))</span>
+          <div class="sec-wb-track">\(barFill)</div>
+          \(valueText)
+          <span class="sec-wb-weight">W \(cat.weight)</span>
+        </div>
+        """
+    }
+
+    /// A per-category detail section: header + (checks with bars & violations) or a "not assessed" note.
+    private func secCategorySection(category: SecurityCategory, results: [APResult], catScore: CategoryScore?) -> String {
+        let weightStr = "weight \(category.weight) / 1000"
+        let assessed = !results.isEmpty
+
+        // Section header bar.
+        let riskPct = catScore?.riskPercent ?? 0
+        let riskColor = secRiskColor(riskPct)
+        let headerRight: String = assessed
+            ? "<span class=\"sec-sec-risk\" style=\"color:\(riskColor)\">\(riskPct)% risk · \(catScore?.points ?? 0)/\(category.weight) pts</span>"
+            : "<span class=\"sec-sec-risk sec-sec-na\">not assessed</span>"
+
+        var html = """
+        <div class="sec-sec">
+          <div class="sec-sec-head">
+            <span class="sec-sec-num">\(category.rawValue)</span>
+            <span class="sec-sec-icon">\(category.icon)</span>
+            <span class="sec-sec-title">\(esc(category.title))</span>
+            <span class="sec-sec-weight">\(weightStr)</span>
+            \(headerRight)
+          </div>
+          <div class="sec-sec-blurb">\(esc(category.blurb))</div>
+        """
+
+        if !assessed {
+            html += "<div class=\"sec-sec-empty\">No active checks in this category yet — informational only, contributes 0 to the index.</div>"
+            html += "</div>"
+            return html
+        }
+
+        // Order checks HIGH → MEDIUM → LOW.
+        let ordered = [APPriority.high, .medium, .low].flatMap { pri in
+            results.filter { $0.check.priority == pri }
+        }
+
+        for r in ordered {
+            let count = r.violations.count
+            let isFail = !r.passed
+            let barColor = isFail ? secPriorityColor(r.check.priority) : "#5a8a7a"
+            // Per-check bar width: scale absolute count on a log curve so big counts don't blow out.
+            let barW: Int = {
+                guard count > 0 else { return 0 }
+                let v = min(100, Int((log(Double(count) + 1.0) / log(101.0) * 100).rounded()))
+                return max(6, v)
+            }()
+            let statusIcon = isFail ? "✗" : "✓"
+            let countLabel: String = {
+                if !isFail { return "0" }
+                return count >= SecurityAnalyzer.maxViolations
+                    ? "\(count) (first \(SecurityAnalyzer.maxViolations))"
+                    : "\(count)"
+            }()
+
+            html += """
+            <div class="sec-check">
+              <div class="sec-check-row">
+                <span class="sec-check-status" style="color:\(isFail ? "var(--red)" : "#34c759")">\(statusIcon)</span>
+                \(apPriBadge(r.check.priority))
+                <span class="sec-check-name">\(esc(r.check.name))</span>
+                <div class="sec-check-track"><div class="sec-check-fill" style="width:\(barW)%;background:\(barColor)"></div></div>
+                <span class="sec-check-count" style="color:\(isFail ? "var(--red)" : "var(--text3)")">\(countLabel)</span>
+              </div>
+            """
+
+            if isFail {
+                html += "<div class=\"sec-check-desc\">\(esc(r.check.description))</div>"
+                html += "<div class=\"sec-violations\">"
+                for v in r.violations {
+                    let authorBadge = v.author.map { "<span class=\"ap-author-badge\">\(esc($0))</span>" } ?? ""
+                    let fileLabel = v.line > 0 ? "\(esc(v.file)):\(v.line)" : esc(v.file)
+                    let fileRef = v.line > 0
+                        ? vsLink(path: v.fullPath, label: fileLabel, line: v.line)
+                        : "<span>\(fileLabel)</span>"
+                    html += "<div class=\"ap-violation\"><span class=\"ap-file\">\(fileRef)</span><span class=\"ap-snippet\">\(esc(v.snippet))</span>\(authorBadge)</div>"
+                }
+                html += "</div>"
             }
             html += "</div>"
         }
 
-        html += "<div class=\"ap-summary\"><span class=\"ap-fail-badge\">✗ \(failed.count) failed</span></div>"
-
-        for pri in [APPriority.high, .medium, .low] {
-            for r in failed where r.check.priority == pri {
-                html += "<div class=\"ap-check\">"
-                html += "<div class=\"ap-check-header\">\(apPriBadge(r.check.priority))<span class=\"ap-lang-badge\">SWIFT</span>"
-                html += "<span class=\"ap-check-title\">\(esc(r.check.name))</span>"
-                let badge = r.violations.count >= AntipatternAnalyzer.maxViolations
-                    ? "\(r.violations.count) (first \(AntipatternAnalyzer.maxViolations))"
-                    : "\(r.violations.count) violations"
-                html += "<span class=\"ap-check-count\">\(badge)</span></div>"
-                html += "<div class=\"ap-violations\">"
-                html += "<div class=\"ap-check-desc\">\(esc(r.check.description))</div>"
-                for v in r.violations {
-                    let authorBadge = v.author.map { "<span class=\"ap-author-badge\">\(esc($0))</span>" } ?? ""
-                    let fileRef = vsLink(path: v.fullPath, label: "\(esc(v.file)):\(v.line)", line: v.line)
-                    html += "<div class=\"ap-violation\"><span class=\"ap-file\">\(fileRef)</span><span class=\"ap-snippet\">\(esc(v.snippet))</span>\(authorBadge)</div>"
-                }
-                html += "</div></div>"
-            }
-        }
+        html += "</div>"
         return html
+    }
+
+    /// Risk-percent → band color (matches gauge bands).
+    private func secRiskColor(_ pct: Int) -> String {
+        switch pct {
+        case ..<25:  return "#5a8a7a"
+        case 25..<50: return "#a0a030"
+        case 50..<75: return "#c0a030"
+        default:      return "#c05040"
+        }
+    }
+
+    /// Priority → bar color for failing checks.
+    private func secPriorityColor(_ p: APPriority) -> String {
+        switch p {
+        case .high:   return "#c05040"
+        case .medium: return "#c0a030"
+        case .low:    return "#a0a030"
+        }
+    }
+
+    /// Minimal JS-string escaping for embedding category names in a JS object literal.
+    private func jsEsc(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private func apPriBadge(_ p: APPriority) -> String {

@@ -45,38 +45,39 @@ The generated HTML report is a single self-contained file — open it anywhere, 
 
 1. **Summary** — total files, lines of code, declarations by type (structs, classes, enums, protocols, actors), Swift version, deployment targets, app version, and package count
 
-2. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
+2. **🏛️ Architecture** — structural decomposition across 5 sub-sections:
+   - **📐 Layers** — files classified by directory/naming patterns into UI/Views, Presentation, Models, API/Networking, Persistence, Auth, Config, Utilities, Tests, Core — with file counts, line counts, and proportional bar chart
+   - **🧩 Components** — detected architectural components from Apple framework imports (SwiftUI, UIKit, CoreData, Combine, ARKit, CoreML, and 30+ more)
+   - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
+   - **📦 External Libraries** — third-party package imports detected across the codebase
+   - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
+   - **🗺️ Architecture Graph** — top-level dependency graph
+  
+3. **🚨 Security Risks** *(40 active checks · index 0–1000)*  
+   Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
+
+4. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
+   - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
+   - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
+   - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
+   - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
+   - 
+5. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
    - **📊 Commit Activity** — commit metrics like rollback rate
    - **🌿 Branch Management** — total branch count (local + remote), stale branches (>90 days inactive), and already-merged branches
    - **🔥 Code Churn** — top 15 most frequently changed files by commit count, ranked from highest to lowest
    - **📐 Semantic Standards** — conventional commit compliance rate, semver tag count, and a breakdown of commit prefix types (feat, fix, chore, etc.)
 
-3. **🏛️ Architecture** — structural decomposition across 5 sub-sections:
-   - **📐 Layers** — files classified by directory/naming patterns into UI/Views, Presentation, Models, API/Networking, Persistence, Auth, Config, Utilities, Tests, Core — with file counts, line counts, and proportional bar chart
-   - **🧩 Components** — detected architectural components from Apple framework imports (SwiftUI, UIKit, CoreData, Combine, ARKit, CoreML, and 30+ more)
-   - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
-   - **📦 External Libraries** — third-party package imports detected across the codebase
-   - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
-   - 🗺️ Architecture Graph - top level design
+6. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
-4. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
+7. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
 
-5. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+8. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
 
-6. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
+9. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
 
-7. **📏 Longest Functions** — ranked list of functions by line count, flagging refactoring candidates
-
-8. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
-   - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
-   - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
-   - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
-   - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
-
-9. **⚠️ Anti-patterns** — 20 static checks across HIGH / MEDIUM / LOW priorities, each with violation count, file location, and code snippet. Checks include force unwrap / force try, retain cycles, hardcoded secrets, missing `final`, empty `catch`, IUOs, and more
-
-10. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
+10. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
 ---
 
@@ -260,6 +261,9 @@ ArchSwiftScope/
 │   │   └── InitCommand.swift              # Config initialization
 │   ├── Core/
 │   │   ├── AnalysisPipeline.swift         # Shared pipeline logic
+│   │   ├── OOPvsPOPAnalyzer.swift         # OOP vs POP scoring
+│   │   ├── SecurityAnalyzer.swift         # 40-check security index (0–1000)
+│   │   ├── MonkeyPatchedLibs.swift        # Vendored library detection
 │   │   ├── Config/
 │   │   │   └── CodeContextConfig.swift    # Config models + loader
 │   │   ├── Cache/

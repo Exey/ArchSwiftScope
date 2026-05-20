@@ -69,15 +69,15 @@ struct AnalyzeCommand: AsyncParsableCommand {
             print("\(prefix) \(fileName) (\(String(format: "%.4f", item.score)))")
         }
 
-        // Anti-pattern checks (parallel file I/O)
+        // Security risk checks (parallel file I/O)
         let mpPaths = result.monkeyPatchedLibs.map(\.path)
         let projectFiles = enrichedFiles.filter { f in
             !mpPaths.contains { f.filePath.contains("/\($0)/") }
         }
         let swiftFileCount = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
         let repoPath = URL(fileURLWithPath: path).standardizedFileURL.path
-        print("\n⚠️  Anti-pattern checks · \(swiftFileCount) Swift files")
-        let apResults = AntipatternAnalyzer.run(files: projectFiles, repoPath: repoPath)
+        print("\n🚨 Security risk checks · \(swiftFileCount) Swift files")
+        let (apResults, securityScore) = SecurityAnalyzer.runWithScore(files: projectFiles, repoPath: repoPath)
 
         let priLabel: (APPriority) -> String = {
             switch $0 { case .high: "HIGH"; case .medium: "MED "; case .low: "LOW " }
@@ -95,6 +95,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
         let failed = apResults.filter { !$0.passed }.count
         let passed = apResults.filter { $0.passed }.count
         print("   \(failed) failed · \(passed) passed")
+        print("   🛡️  Security Index: \(securityScore.total) / 1000 · \(securityScore.band.label)")
 
         // OOP vs POP analysis
         print("\n🧬 OOP vs POP · \(swiftFileCount) Swift files")
@@ -129,6 +130,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
             repoPath: repoPath,
             apResults: apResults,
             oopStats: oopStats,
+            securityScore: securityScore,
             skipModules: skipModules
         )
 
