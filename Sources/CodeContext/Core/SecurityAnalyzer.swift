@@ -400,11 +400,18 @@ private extension SecurityAnalyzer {
                 detect: checkUserDefaultsSensitive
             ),
             APCheck(
-                name: "Use Cryptographically Secure Randomness",
-                description: "`arc4random()` and `arc4random_uniform()` are deprecated and cryptographically weak. For security-sensitive values - tokens, keys, nonces, session IDs - use `SecRandomCopyBytes` or `CryptoKit`. For non-security uses, prefer `Int.random(in:)` from Swift's standard library.",
+                name: "Insecure Randomness in Security Context (arc4random)",
+                description: "`arc4random()` / `arc4random_uniform()` are cryptographically weak — found in files that perform encryption, signing, padding, or secure-ID generation. These values must be unpredictable: replace with `SecRandomCopyBytes` or `CryptoKit.SystemRandomNumberGenerator`.",
                 priority: .high,
                 category: .cryptography,
-                detect: checkInsecureRandom
+                detect: checkInsecureRandomCrypto
+            ),
+            APCheck(
+                name: "Deprecated arc4random in Non-Security Code",
+                description: "`arc4random()` and `arc4random_uniform()` are deprecated since Swift 4.2. For UI animations, particle effects, and other non-security randomness, prefer `Int.random(in:)` / `Float.random(in:)` from Swift's standard library — they are faster, type-safe, and not deprecated.",
+                priority: .low,
+                category: .unsafeDeprecated,
+                detect: checkInsecureRandomUI
             ),
             APCheck(
                 name: "Never Force Unwrap or Force Try (! / try!)",
@@ -633,6 +640,14 @@ private extension SecurityAnalyzer {
                 detect: { _, _ in [] },
                 projectDetect: checkJailbreakDetectionAbsent
             ),
+            APCheck(
+                name: "No Anti-Tampering Protections Found",
+                description: "No runtime anti-tampering signals were detected — no anti-debug checks (PT_DENY_ATTACH, sysctl-based), no simulator-environment guards, and no tweak-injection awareness (DYLD_INSERT_LIBRARIES, Substrate). For security-sensitive apps, implement layered runtime integrity checks to raise the cost of reverse-engineering and dynamic analysis.",
+                priority: .medium,
+                category: .binaryProtections,
+                detect: { _, _ in [] },
+                projectDetect: checkAntiTamperingAbsent
+            ),
 
             // ── Privacy Violations ──────────────────────────────────────────
             APCheck(
@@ -744,7 +759,27 @@ private extension SecurityAnalyzer {
         return out
     }
 
-    static func checkInsecureRandom(_ filePath: String, _ lines: [String]) -> [APViolation] {
+    private static let securityPathTerms = [
+        "SecureId", "Encrypt", "Decrypt", "Crypto", "Signing",
+        "SecretChat", "Authentication", "SecretKey", "CryptoUtils",
+    ]
+
+    static func checkInsecureRandomCrypto(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        guard securityPathTerms.contains(where: { filePath.contains($0) }) else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if code.contains("arc4random()") || code.contains("arc4random_uniform(") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    static func checkInsecureRandomUI(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if securityPathTerms.contains(where: { filePath.contains($0) }) { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
@@ -1201,6 +1236,8 @@ private extension SecurityAnalyzer {
     // MARK: Input/Output Validation
 
     static func checkPathTraversal(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.hasSuffix("Package.swift") { return [] }
+        if filePath.lowercased().contains("test") { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
@@ -1259,6 +1296,49 @@ private extension SecurityAnalyzer {
         }
         return [APViolation(file: "Project-wide", fullPath: repoPath, line: 0,
                             snippet: "No jailbreak detection patterns found in the codebase.")]
+    }
+
+    // MARK: Binary Protections — Anti-Tampering helpers
+
+    private static func checkDebuggerAttached(_ filePath: String, _ lines: [String]) -> Bool {
+        let patterns = ["PT_DENY_ATTACH", "ptrace(PT_DENY_ATTACH",
+                        "proc_pid_debug", "kern.proc.pid",
+                        "isDebuggerAttached", "AmIBeingDebugged"]
+        return lines.contains { line in !isComment(line) && patterns.contains(where: { stripStrings(line).contains($0) }) }
+    }
+
+    private static func checkEmulatorOrSimulator(_ filePath: String, _ lines: [String]) -> Bool {
+        let patterns = ["TARGET_OS_SIMULATOR", "TARGET_IPHONE_SIMULATOR",
+                        "isSimulator", "isEmulator",
+                        "SIMULATOR_DEVICE_NAME", "XCTestConfigurationFilePath"]
+        return lines.contains { line in !isComment(line) && patterns.contains(where: { stripStrings(line).contains($0) }) }
+    }
+
+    private static func checkTweakInjectionSigns(_ filePath: String, _ lines: [String]) -> Bool {
+        let patterns = ["DYLD_INSERT_LIBRARIES", "MSHookMessage", "MSHookFunction",
+                        "fishhook", "/Library/MobileSubstrate/",
+                        "/usr/lib/libsubstrate", "SubstrateLoader"]
+        return lines.contains { line in !isComment(line) && patterns.contains(where: { stripStrings(line).contains($0) }) }
+    }
+
+    static func checkAntiTamperingAbsent(_ repoPath: String) -> [APViolation] {
+        let allSignals = [
+            "PT_DENY_ATTACH", "isDebuggerAttached", "AmIBeingDebugged",
+            "proc_pid_debug", "kern.proc.pid",
+            "TARGET_OS_SIMULATOR", "TARGET_IPHONE_SIMULATOR", "SIMULATOR_DEVICE_NAME",
+            "DYLD_INSERT_LIBRARIES", "MSHookMessage", "MSHookFunction",
+            "/Library/MobileSubstrate/", "SubstrateLoader", "fishhook",
+        ]
+        guard let enumerator = FileManager.default.enumerator(atPath: repoPath) else { return [] }
+        for case let rel as String in enumerator {
+            guard rel.hasSuffix(".swift") || rel.hasSuffix(".m") || rel.hasSuffix(".mm") else { continue }
+            if rel.lowercased().contains("test") { continue }
+            let full = "\(repoPath)/\(rel)"
+            guard let content = try? String(contentsOfFile: full, encoding: .utf8) else { continue }
+            if allSignals.contains(where: { content.contains($0) }) { return [] }
+        }
+        return [APViolation(file: "Project-wide", fullPath: repoPath, line: 0,
+                            snippet: "No runtime anti-tampering protections found (anti-debug, simulator guards, tweak injection detection).")]
     }
 
     // MARK: Privacy

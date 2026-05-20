@@ -53,14 +53,14 @@ The generated HTML report is a single self-contained file — open it anywhere, 
    - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
    - **🗺️ Architecture Graph** — top-level dependency graph
   
-3. **🚨 Security Risks** *(40 active checks · index 0–1000)*  
-   Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
-
-4. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
+3. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
    - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
    - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
    - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
    - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
+
+4. **🚨 Security Risks** *(42 active checks · index 0–1000)*  
+   Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
    - 
 5. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
