@@ -764,6 +764,16 @@ private extension SecurityAnalyzer {
         "SecretChat", "Authentication", "SecretKey", "CryptoUtils",
     ]
 
+    /// File name terms that indicate UI / rendering / animation code — skip deprecation noise.
+    private static let uiFileNameTerms = [
+        "View", "Node", "Animation", "Component", "Button", "Panel",
+    ]
+    /// Variable/property names that indicate an arc4random value feeds a visual/animation property.
+    private static let animLineTerms = [
+        "degrees", "velocity", "lifetime", "startAngle", "randAngle",
+        ".seed =", "beginTime",
+    ]
+
     static func checkInsecureRandomCrypto(_ filePath: String, _ lines: [String]) -> [APViolation] {
         guard securityPathTerms.contains(where: { filePath.contains($0) }) else { return [] }
         var out: [APViolation] = []
@@ -780,14 +790,18 @@ private extension SecurityAnalyzer {
 
     static func checkInsecureRandomUI(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if securityPathTerms.contains(where: { filePath.contains($0) }) { return [] }
+        // Skip files that are clearly UI/rendering/animation by their filename
+        let fileName = URL(fileURLWithPath: filePath).lastPathComponent
+        if uiFileNameTerms.contains(where: { fileName.contains($0) }) { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            if code.contains("arc4random()") || code.contains("arc4random_uniform(") {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
-            }
+            guard code.contains("arc4random()") || code.contains("arc4random_uniform(") else { continue }
+            // Skip lines where the random value feeds a visual/animation property
+            if animLineTerms.contains(where: { line.contains($0) }) { continue }
+            out.append(viol(filePath, i, lines))
+            if out.count >= maxViolations { break }
         }
         return out
     }
