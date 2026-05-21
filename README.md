@@ -59,9 +59,9 @@ The generated HTML report is a single self-contained file — open it anywhere, 
    - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
    - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
 
-4. **🚨 Security Risks** *(42 active checks · index 0–1000)*  
+4.🚨 **Security Risks** - (42 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
-   - 
+
 5. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
    - **📊 Commit Activity** — commit metrics like rollback rate
