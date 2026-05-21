@@ -20,9 +20,6 @@ swift run codecontext analyze ~/path/to/your/project --open
 swift build -c release
 .build/release/codecontext analyze ~/path/to/your/project --open
 ```
-
-![Based on https://github.com/TelegramMessenger/Telegram-iOS](https://i.postimg.cc/wgCrvx9N/Arch-Sw-ift-Scope-1680-2.png)
-
 ---
 
 ## 🔒 Offline by Design
@@ -61,6 +58,9 @@ The generated HTML report is a single self-contained file — open it anywhere, 
 
 4.🚨 **Security Risks** - (42 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
+   
+   ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/sas_sec.svg)
+
 
 5. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
