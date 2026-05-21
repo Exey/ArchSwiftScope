@@ -2027,8 +2027,10 @@ private extension SecurityAnalyzer {
                 if ch == "{" { braceDepth += 1; bodyEntered = true }
                 else if ch == "}" { braceDepth -= 1 }
             }
-            if code.contains("SecTrustEvaluateWithError") || code.contains("serverTrust") ||
-               code.contains("SecTrustCopyExceptions") || code.contains("SecPolicyCreate") {
+            if code.contains("SecTrustEvaluateWithError") ||
+               code.contains("SecTrustCopyExceptions") ||
+               code.contains("SecPolicyCreateSSL") ||
+               code.contains("SecTrustSetPolicies") {
                 hasValidation = true
             }
             if !hasValidation && code.contains(".useCredential") {
