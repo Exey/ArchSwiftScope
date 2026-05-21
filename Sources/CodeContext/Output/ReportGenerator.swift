@@ -1055,7 +1055,7 @@ struct ReportGenerator {
         <body>
         <div class="container">
             <div class="card">
-                <h1>🔬 ArchSwiftScope Report — \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
+                <h1>🔬 ArchSwiftScope 📋 \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
                 <p class="subtitle">Generated \(Date().formatted()) · <span class="branch-badge">\(esc(branchName))</span> branch</p>
                 <div class="summary-grid">
                     \(!metadata.swiftVersion.isEmpty ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:20px\">Swift \(esc(metadata.swiftVersion))</div><div class=\"label\">Language</div></div>" : "")
@@ -1257,7 +1257,7 @@ struct ReportGenerator {
             var endAngle = Math.PI * (1 - pct);
             var ex = cx + r * Math.cos(endAngle);
             var ey = cy - r * Math.sin(endAngle);
-            var col = pct < 0.40 ? '#5a8a7a' : pct < 0.65 ? '#c0a030' : '#c05040';
+            var col = pct < 0.20 ? '#5a8a7a' : pct < 0.50 ? '#a0a030' : pct < 0.80 ? '#c0a030' : '#c05040';
             var fg = document.createElementNS(ns, 'path');
             fg.setAttribute('d', 'M ' + (cx - r) + ',' + cy + ' A ' + r + ',' + r + ' 0 0 1 ' + ex.toFixed(2) + ',' + ey.toFixed(2));
             fg.setAttribute('fill', 'none');

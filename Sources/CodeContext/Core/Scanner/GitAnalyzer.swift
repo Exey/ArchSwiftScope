@@ -414,6 +414,20 @@ struct GitAnalyzer {
     /// Returns a line-number → author-name map for a file via `git blame --porcelain`.
     func blameLines(filePath: String) -> [Int: String] {
         guard let output = git(["blame", "--porcelain", filePath]) else { return [:] }
+        return parseBlameOutput(output)
+    }
+
+    /// Blames only the specified line numbers using `-L ln,ln` ranges — much faster than full-file blame.
+    func blameLinesSubset(filePath: String, lineNumbers: Set<Int>) -> [Int: String] {
+        guard !lineNumbers.isEmpty else { return [:] }
+        var args = ["blame", "--porcelain"]
+        for ln in lineNumbers.sorted() { args += ["-L", "\(ln),\(ln)"] }
+        args.append(filePath)
+        guard let output = git(args) else { return [:] }
+        return parseBlameOutput(output)
+    }
+
+    private func parseBlameOutput(_ output: String) -> [Int: String] {
         var result: [Int: String] = [:]
         var commitAuthors: [String: String] = [:]
         var currentCommit = ""

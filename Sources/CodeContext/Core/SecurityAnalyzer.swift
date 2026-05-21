@@ -15,13 +15,19 @@ enum APPriority: String {
     case high = "HIGH"
     case medium = "MEDIUM"
     case low = "LOW"
+
+    /// Multiplier applied to violation counts when computing weighted density.
+    /// HIGH×2 reflects that a single critical finding carries more risk than two low-severity ones.
+    var violationWeight: Double {
+        switch self { case .high: return 2.0; case .medium: return 1.0; case .low: return 0.5 }
+    }
 }
 
 // MARK: - Security Categories
 
 /// The 14 security risk categories used by the security index.
 /// `weight` values are points out of the 1000-point security index and sum to 1000.
-/// `id` (rawValue) is the 1-based number shown in the report (1...13).
+/// `id` (rawValue) is the 1-based number shown in the report (1...14).
 enum SecurityCategory: Int, CaseIterable {
     case insecureDataStorage = 1
     case crashFactors
@@ -114,7 +120,7 @@ enum SecurityCategory: Int, CaseIterable {
         case .privacy:             return "Excessive permissions, consent gaps, identifier misuse."
         case .iosConfiguration:    return "Info.plist misconfigurations (backup, ATS, sharing)."
         case .logicState:          return "Race conditions, jailbreak bypasses, insecure IPC, state bugs."
-        case .lowLevelBinary:      return "C/C++ memory-corruption primitives."
+        case .lowLevelBinary:      return "C/ObjC/C++ memory-corruption primitives and ObjC runtime hazards."
         }
     }
 }
@@ -183,9 +189,9 @@ struct SecurityScore {
         }
         var range: (lo: Int, hi: Int) {
             switch self {
-            case .healthy:  return (0, 399)
-            case .light:    return (400, 649)
-            case .elevated: return (650, 799)
+            case .healthy:  return (0, 199)
+            case .light:    return (200, 499)
+            case .elevated: return (500, 799)
             case .critical: return (800, 1000)
             }
         }
@@ -193,9 +199,9 @@ struct SecurityScore {
 
     var band: Band {
         switch total {
-        case ..<400:    return .healthy
-        case 400..<650: return .light
-        case 650..<800: return .elevated
+        case ..<200:    return .healthy
+        case 200..<500: return .light
+        case 500..<800: return .elevated
         default:        return .critical
         }
     }
@@ -206,7 +212,7 @@ struct SecurityScore {
 struct SecurityAnalyzer {
     static let maxViolations = 100
 
-    static func run(files: [ParsedFile], repoPath: String = "") -> [APResult] {
+    static func run(files: [ParsedFile], repoPath: String = "", commitLimit: Int = 500) -> [APResult] {
         let checks = allChecks()
         let swiftFiles = files.filter { $0.filePath.hasSuffix(".swift") }
 
@@ -237,6 +243,34 @@ struct SecurityAnalyzer {
             lock.unlock()
         }
 
+        // C / ObjC / C++ files: run only lowLevelBinary checks (Swift-first tool, limited extension)
+        let nativeFiles = files.filter {
+            let p = $0.filePath
+            return p.hasSuffix(".m") || p.hasSuffix(".mm") || p.hasSuffix(".c") || p.hasSuffix(".cpp")
+        }
+        if !nativeFiles.isEmpty {
+            let nativeIndices = checks.indices.filter { checks[$0].category == .lowLevelBinary }
+            DispatchQueue.concurrentPerform(iterations: nativeFiles.count) { idx in
+                let filePath = nativeFiles[idx].filePath
+                guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return }
+                let lines = content.components(separatedBy: "\n")
+                var local: [(Int, [APViolation])] = []
+                for i in nativeIndices {
+                    let vs = checks[i].detect(filePath, lines)
+                    if !vs.isEmpty { local.append((i, vs)) }
+                }
+                guard !local.isEmpty else { return }
+                lock.lock()
+                for (i, vs) in local {
+                    let have = violationsPerCheck[i].count
+                    if have < maxViolations {
+                        violationsPerCheck[i].append(contentsOf: vs.prefix(maxViolations - have))
+                    }
+                }
+                lock.unlock()
+            }
+        }
+
         // Run project-level checks once (plist scans, whole-repo absence checks, etc.)
         if !repoPath.isEmpty {
             for i in checks.indices {
@@ -254,15 +288,29 @@ struct SecurityAnalyzer {
             APResult(check: checks[i], violations: violationsPerCheck[i])
         }
 
-        // Enrich violations with blame authors (sequential — git blame is already fast per-file)
+        // Enrich violations with blame authors (parallel, range-limited)
         if !repoPath.isEmpty {
-            let git = GitAnalyzer(repoPath: repoPath, commitLimit: 0)
+            let git = GitAnalyzer(repoPath: repoPath, commitLimit: commitLimit)
+            // Build file → needed line numbers (skip project-wide violations with line 0)
+            var fileToLines: [String: Set<Int>] = [:]
+            for result in results {
+                for v in result.violations where v.line > 0 {
+                    fileToLines[v.fullPath, default: []].insert(v.line)
+                }
+            }
+            let filePaths = Array(fileToLines.keys)
             var blameCache: [String: [Int: String]] = [:]
+            let blameLock = NSLock()
+            DispatchQueue.concurrentPerform(iterations: filePaths.count) { idx in
+                let path = filePaths[idx]
+                let lines = fileToLines[path] ?? []
+                let blame = git.blameLinesSubset(filePath: path, lineNumbers: lines)
+                blameLock.lock()
+                blameCache[path] = blame
+                blameLock.unlock()
+            }
             results = results.map { result in
                 let enriched = result.violations.map { v -> APViolation in
-                    if blameCache[v.fullPath] == nil {
-                        blameCache[v.fullPath] = git.blameLines(filePath: v.fullPath)
-                    }
                     var updated = v
                     updated.author = blameCache[v.fullPath]?[v.line]
                     return updated
@@ -275,8 +323,8 @@ struct SecurityAnalyzer {
     }
 
     /// Runs all checks and also computes the 0...1000 security index.
-    static func runWithScore(files: [ParsedFile], repoPath: String = "") -> (results: [APResult], score: SecurityScore) {
-        let results = run(files: files, repoPath: repoPath)
+    static func runWithScore(files: [ParsedFile], repoPath: String = "", commitLimit: Int = 500) -> (results: [APResult], score: SecurityScore) {
+        let results = run(files: files, repoPath: repoPath, commitLimit: commitLimit)
         let swiftFileCount = files.filter { $0.filePath.hasSuffix(".swift") }.count
         let score = computeScore(results, fileCount: swiftFileCount)
         return (results, score)
@@ -308,10 +356,15 @@ struct SecurityAnalyzer {
             if checkCount == 0 || violations == 0 {
                 risk = 0
             } else {
-                // Density of violations per scanned file. Curve: 1 - exp(-k * density).
-                let density = Double(violations) / denom
-                let k = 4.0
-                risk = 1.0 - exp(-k * density)
+                // Weighted violation count: HIGH×2, MEDIUM×1, LOW×0.5.
+                // Logistic curve risk = density / (density + C), C=2.
+                // For 1 file + 1 HIGH finding → risk = 0.50 (vs 0.98 with the old exponential),
+                // so small projects are no longer over-penalised.
+                let weighted = catResults.reduce(0.0) { acc, r in
+                    acc + Double(r.violations.count) * r.check.priority.violationWeight
+                }
+                let density = weighted / denom
+                risk = density / (density + 2.0)
             }
 
             let points = Int((risk * Double(category.weight)).rounded())
@@ -375,6 +428,51 @@ struct SecurityAnalyzer {
     static func isComment(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
         return t.hasPrefix("//") || t.hasPrefix("*") || t.hasPrefix("/*")
+    }
+
+    /// Strips trailing `// comment` from a line while preserving string literal content.
+    /// Use this for checks that need to inspect literal values (e.g. "http://") without
+    /// firing on code that has been commented out inline: `someCall() // "http://old"`
+    static func stripLineComment(_ line: String) -> String {
+        var result = ""
+        var inString = false
+        var idx = line.startIndex
+        while idx < line.endIndex {
+            let c = line[idx]
+            if c == "\\" && inString {
+                result.append(c)
+                let next = line.index(after: idx)
+                if next < line.endIndex { result.append(line[next]); idx = line.index(after: next) }
+                else { idx = next }
+                continue
+            }
+            if c == "\"" { inString.toggle() }
+            if !inString && c == "/" {
+                let next = line.index(after: idx)
+                if next < line.endIndex && line[next] == "/" { break }
+            }
+            result.append(c)
+            idx = line.index(after: idx)
+        }
+        return result
+    }
+
+    /// Word-boundary-aware function-call check: returns true only when `funcCall`
+    /// (e.g. `"free("`) is NOT preceded by an identifier character, preventing
+    /// `myFree(` or `getFreeSpace(` from matching `free(`.
+    static func containsCall(_ code: String, _ funcCall: String) -> Bool {
+        var pos = code.startIndex
+        while let range = code.range(of: funcCall, range: pos..<code.endIndex) {
+            if range.lowerBound == code.startIndex {
+                return true
+            }
+            let before = code[code.index(before: range.lowerBound)]
+            if !before.isLetter && !before.isNumber && before != "_" {
+                return true
+            }
+            pos = range.upperBound
+        }
+        return false
     }
 }
 
@@ -460,6 +558,30 @@ private extension SecurityAnalyzer {
                 detect: checkSensitivePrint
             ),
 
+            APCheck(
+                name: "Unencrypted Database (Realm / CoreData / SQLite)",
+                description: "A Realm database opened without `encryptionKey`, a Core Data store added without `NSPersistentStoreFileProtectionKey`, or a SQLite database opened without SQLCipher's `sqlite3_key` stores all records in plaintext on disk. On a jailbroken device or via direct iTunes backup extraction the entire database is readable. Always supply an encryption key derived from the Keychain — never hardcode it. The Realm check is project-wide: if `encryptionKey` appears anywhere in the codebase, all Realm call sites are considered safe.",
+                priority: .high,
+                category: .insecureDataStorage,
+                detect: checkUnencryptedDatabaseLocal,
+                projectDetect: checkUnencryptedRealmProject
+            ),
+            APCheck(
+                name: "Hardcoded Secrets in Info.plist / xcconfig",
+                description: "API keys, tokens, and secrets embedded in `Info.plist` or `.xcconfig` files are included verbatim in the app bundle and are trivially extracted with `strings` or `plutil`. Store secrets in the Keychain, retrieve them at launch from a secure backend, or reference them via CI/CD environment variables that are never committed to source control.",
+                priority: .high,
+                category: .insecureDataStorage,
+                detect: { _, _ in [] },
+                projectDetect: checkSecretsInConfigFiles
+            ),
+            APCheck(
+                name: "Sensitive Responses Persisted by URLCache / WKWebView",
+                description: "`URLCache` configured with non-zero disk capacity persists authenticated responses — including Bearer tokens in response bodies — to the device's file system. `WKWebsiteDataStore.default()` similarly caches cookies and web storage. Use `URLCache(memoryCapacity:diskCapacity: 0)` for sessions carrying auth data, and `WKWebViewConfiguration` with a `.nonPersistent()` data store for sensitive web views.",
+                priority: .medium,
+                category: .insecureDataStorage,
+                detect: checkSensitiveURLCaching
+            ),
+
             // ── Crash Factors (continued) ───────────────────────────────────
             APCheck(
                 name: "fatalError / preconditionFailure in Production Code",
@@ -483,6 +605,13 @@ private extension SecurityAnalyzer {
                 priority: .high,
                 category: .unsafeDeprecated,
                 detect: checkWeakCryptoConstants
+            ),
+            APCheck(
+                name: "UIWebView Usage (Deprecated, No Security Patches Since iOS 12)",
+                description: "`UIWebView` has been deprecated since iOS 12 and removed from the App Store review guidelines. It no longer receives security patches, carries known XSS and memory-safety vulnerabilities, and was rejected by App Store review since April 2020. Replace all `UIWebView` instances with `WKWebView`.",
+                priority: .high,
+                category: .unsafeDeprecated,
+                detect: checkUIWebView
             ),
 
             // ── Third-Party & Supply Chain ──────────────────────────────────
@@ -540,6 +669,28 @@ private extension SecurityAnalyzer {
                 detect: checkHardcodedIV
             ),
 
+            APCheck(
+                name: "Hardcoded Encryption Key",
+                description: "A symmetric key or AES key assigned from a string literal (`let key = \"abc123...\"`) or a hardcoded `[UInt8]` array is embedded in the binary and extractable with `strings`. Key material must be generated at runtime and stored in the Keychain — never written in source code.",
+                priority: .high,
+                category: .cryptography,
+                detect: checkHardcodedEncryptionKey
+            ),
+            APCheck(
+                name: "CBC Mode Without Authentication (MAC)",
+                description: "CBC mode alone provides confidentiality but no integrity: an attacker who can submit chosen ciphertexts can exploit padding-oracle vulnerabilities to decrypt or forge messages without knowing the key. Always pair CBC with a separate HMAC (Encrypt-then-MAC), or replace with an authenticated mode such as AES-GCM or ChaChaPoly1305 which provides both in one pass. Note: this check is file-local — an HMAC defined in a separate CryptoHelper file will not suppress this warning.",
+                priority: .high,
+                category: .cryptography,
+                detect: checkCBCWithoutMAC
+            ),
+            APCheck(
+                name: "Insufficient PBKDF2 Iterations",
+                description: "A PBKDF2 round count below 10,000 can be brute-forced on commodity hardware in seconds. NIST SP 800-132 recommends ≥ 600,000 iterations with SHA-256 for 2023+. Raise the iteration count and store it alongside the salt so future migrations remain possible.",
+                priority: .medium,
+                category: .cryptography,
+                detect: checkPBKDF2Iterations
+            ),
+
             // ── Network Security ────────────────────────────────────────────
             APCheck(
                 name: "Plaintext HTTP URLs",
@@ -556,6 +707,13 @@ private extension SecurityAnalyzer {
                 detect: checkCertValidationBypass
             ),
             APCheck(
+                name: "URLSessionDelegate Challenge Bypass (unconditional useCredential)",
+                description: "`completionHandler(.useCredential, ...)` in `urlSession(_:didReceive:completionHandler:)` without a prior `SecTrustEvaluateWithError` call unconditionally accepts any certificate the server presents — including self-signed ones planted by a MITM proxy. Always evaluate trust before granting a credential; cancel with `.cancelAuthenticationChallenge` on failure.",
+                priority: .high,
+                category: .networkSecurity,
+                detect: checkURLSessionDelegateBypass
+            ),
+            APCheck(
                 name: "ATS Disabled in Info.plist (NSAllowsArbitraryLoads)",
                 description: "`NSAllowsArbitraryLoads = true` disables App Transport Security, allowing connections to any HTTP server and bypassing TLS requirements enforced since iOS 9. Remove this key or scope it to specific domains that genuinely require exceptions.",
                 priority: .high,
@@ -564,11 +722,26 @@ private extension SecurityAnalyzer {
                 projectDetect: checkATSDisabled
             ),
             APCheck(
-                name: "WebView JavaScript Injection",
-                description: "Passing interpolated strings into `evaluateJavaScript` lets attacker-controlled content execute arbitrary JS inside the web view's origin — equivalent to a stored XSS. Enabling `allowFileAccessFromFileURLs` or `allowUniversalAccessFromFileURLs` lets JS escape the sandbox and read the local file system. Always sanitize or encode any data crossing into the JS bridge; disable file-URL access unless strictly required.",
+                name: "WebView JavaScript Injection / Unsafe Configuration",
+                description: "Passing interpolated strings into `evaluateJavaScript` lets attacker-controlled content execute arbitrary JS inside the web view's origin — equivalent to stored XSS. `allowFileAccessFromFileURLs` / `allowUniversalAccessFromFileURLs` lets JS escape the sandbox and read the local filesystem. `allowContentJavaScript = true` (iOS 14+) re-enables JS if it was disabled. Setting `isFraudulentWebsiteWarningEnabled = false` disables Safe Browsing, letting phishing pages load silently. Always sanitize data crossing into the JS bridge; disable file-URL access and keep Safe Browsing enabled.",
                 priority: .high,
                 category: .networkSecurity,
                 detect: checkWebViewJSInjection
+            ),
+
+            APCheck(
+                name: "Hardcoded Auth Token in HTTP Header",
+                description: "A literal `\"Bearer ...\"` or `\"Basic ...\"` value passed to `setValue(_:forHTTPHeaderField:)` embeds a live credential in the binary. Any user with `strings` or a debugger can extract it. Store tokens in the Keychain and inject them at request-build time from a secure credential store.",
+                priority: .high,
+                category: .networkSecurity,
+                detect: checkHardcodedAuthHeader
+            ),
+            APCheck(
+                name: "URLSessionConfiguration Allows Arbitrary Loads (in Code)",
+                description: "Setting `.allowsArbitraryLoads = true` on a `URLSessionConfiguration` in code disables TLS enforcement for that session, bypassing ATS for all requests it makes — even if the plist does not set `NSAllowsArbitraryLoads`. Remove this flag or scope exceptions to specific domains that genuinely require them.",
+                priority: .high,
+                category: .networkSecurity,
+                detect: checkURLSessionArbitraryLoads
             ),
 
             // ── Authentication & Authorization ──────────────────────────────
@@ -664,6 +837,21 @@ private extension SecurityAnalyzer {
                 category: .privacy,
                 detect: checkDeviceFingerprint
             ),
+            APCheck(
+                name: "Declared Permission Without API Usage (Info.plist Mismatch)",
+                description: "An `NSXxxUsageDescription` key in `Info.plist` without any corresponding API usage in the codebase signals a copy-paste leftover or a permission requested beyond actual needs — both a privacy risk and an App Store rejection trigger. Remove unused permission descriptions or verify the corresponding API (e.g. `AVCaptureDevice` for camera, `CLLocationManager` for location) is actually called.",
+                priority: .medium,
+                category: .privacy,
+                detect: { _, _ in [] },
+                projectDetect: checkPermissionMismatch
+            ),
+            APCheck(
+                name: "Crash Reporter Initialized Without Data Scrubbing",
+                description: "PLCrashReporter, Crashlytics, Sentry, and Bugsnag capture full stack frames, thread state, and by default any in-scope variables — which may include passwords, tokens, or PII. If no scrubbing callback (`beforeSend`, `eventProcessor`, `redactedKeys`) is configured in the same setup file, sensitive values may be transmitted to a third-party server. Configure a scrubbing hook before shipping.",
+                priority: .low,
+                category: .privacy,
+                detect: checkCrashReporterDataLeak
+            ),
 
             // ── iOS Configuration Weaknesses ────────────────────────────────
             APCheck(
@@ -712,6 +900,13 @@ private extension SecurityAnalyzer {
                 priority: .medium,
                 category: .lowLevelBinary,
                 detect: checkUnsafeBuffer
+            ),
+            APCheck(
+                name: "Objective-C Runtime Hazards (objc_msgSend / NSInvocation / performSelector)",
+                description: "Direct `objc_msgSend` calls require a manually correct function-pointer cast — a mismatched return type or calling convention silently corrupts registers or the stack. `performSelector:` via `NSSelectorFromString` dispatches by runtime string with no compile-time signature verification. `NSInvocation` invoked with a mismatched method signature overwrites adjacent stack memory. Only applies to `.m` / `.mm` files.",
+                priority: .high,
+                category: .lowLevelBinary,
+                detect: checkObjCRuntimeHazards
             ),
         ]
     }
@@ -899,7 +1094,9 @@ private extension SecurityAnalyzer {
     static func checkWebViewJSInjection(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
         let dangerousConfig = ["allowFileAccessFromFileURLs", "allowUniversalAccessFromFileURLs",
-                               "javaScriptEnabled = true"]
+                               "javaScriptEnabled = true",
+                               "allowContentJavaScript = true",
+                               "isFraudulentWebsiteWarningEnabled = false"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
@@ -997,7 +1194,7 @@ private extension SecurityAnalyzer {
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let lower = line.lowercased()
-            guard lower.contains("print(") || lower.contains("debugprint(") else { continue }
+            guard lower.contains("print(") || lower.contains("debugprint(") || lower.contains("nslog(") else { continue }
             if keywords.contains(where: { lower.contains($0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
@@ -1031,7 +1228,7 @@ private extension SecurityAnalyzer {
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            if funcs.contains(where: { code.contains($0) }) {
+            if funcs.contains(where: { containsCall(code, $0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -1061,7 +1258,8 @@ private extension SecurityAnalyzer {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
-            if line.contains(".package(url:") && line.contains("\"http://") {
+            let stripped = stripLineComment(line)
+            if stripped.contains(".package(url:") && stripped.contains("\"http://") {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -1170,8 +1368,9 @@ private extension SecurityAnalyzer {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
-            guard line.contains("\"http://") else { continue }
-            let lower = line.lowercased()
+            let stripped = stripLineComment(line)
+            guard stripped.contains("\"http://") else { continue }
+            let lower = stripped.lowercased()
             if lower.contains("localhost") || lower.contains("127.0.0.1") || lower.contains("10.0.") { continue }
             out.append(viol(filePath, i, lines))
             if out.count >= maxViolations { break }
@@ -1458,13 +1657,46 @@ private extension SecurityAnalyzer {
 
     // MARK: Low-level Binary
 
+    static func checkObjCRuntimeHazards(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        let ext = (filePath as NSString).pathExtension.lowercased()
+        guard ext == "m" || ext == "mm" else { return [] }
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            // Direct objc_msgSend: caller must cast to exact function-pointer type; any mismatch is UB
+            if containsCall(code, "objc_msgSend(") || containsCall(code, "objc_msgSendSuper(") ||
+               containsCall(code, "objc_msgSend_stret(") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { return out }
+                continue
+            }
+            // performSelector: with NSSelectorFromString — no compile-time type check
+            if code.contains("performSelector:") && code.contains("NSSelectorFromString(") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { return out }
+                continue
+            }
+            // NSInvocation: mismatched signature silently corrupts the call frame
+            if code.contains("NSInvocation") &&
+               (code.contains("invocationWithMethodSignature") ||
+                code.contains("setSelector:") || code.contains("[inv invoke]") ||
+                code.contains("invoke]")) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { return out }
+            }
+        }
+        return out
+    }
+
     static func checkRawCMemory(_ filePath: String, _ lines: [String]) -> [APViolation] {
         let funcs = ["malloc(", "calloc(", "realloc(", "free(", "memcpy(", "memmove(", "memset(", "bzero("]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            if funcs.contains(where: { code.contains($0) }) {
+            if funcs.contains(where: { containsCall(code, $0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -1481,6 +1713,413 @@ private extension SecurityAnalyzer {
             if isComment(line) { continue }
             let code = stripStrings(line)
             if patterns.contains(where: { code.contains($0) }) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+}
+
+// MARK: - Phase 3 Detection Checks
+
+private extension SecurityAnalyzer {
+
+    // MARK: Insecure Data Storage
+
+    // Per-file: CoreData + SQLite only. Realm is handled project-wide below.
+    static func checkUnencryptedDatabaseLocal(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+
+        // CoreData: addPersistentStore without file-protection options
+        let hasCDEncryption = lines.contains {
+            $0.contains("NSPersistentStoreFileProtectionKey") || $0.contains("NSFileProtectionComplete")
+        }
+        if !hasCDEncryption {
+            for (i, line) in lines.enumerated() {
+                if isComment(line) { continue }
+                if stripStrings(line).contains("addPersistentStore") {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { return out }
+                }
+            }
+        }
+
+        // SQLite: sqlite3_open without SQLCipher's sqlite3_key
+        let hasSQLiteCipher = lines.contains { $0.contains("sqlite3_key(") || $0.contains("SQLCipher") }
+        if !hasSQLiteCipher {
+            for (i, line) in lines.enumerated() {
+                if isComment(line) { continue }
+                let code = stripStrings(line)
+                if containsCall(code, "sqlite3_open(") || containsCall(code, "sqlite3_open_v2(") {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { return out }
+                }
+            }
+        }
+
+        return out
+    }
+
+    // Project-wide: if encryptionKey appears anywhere in the codebase, Realm is considered safe.
+    // This avoids false positives when encryption is configured once in a setup file.
+    static func checkUnencryptedRealmProject(_ repoPath: String) -> [APViolation] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(atPath: repoPath) else { return [] }
+        var swiftFiles: [String] = []
+        for case let rel as String in enumerator {
+            guard rel.hasSuffix(".swift") else { continue }
+            if rel.lowercased().contains("test") { continue }
+            swiftFiles.append("\(repoPath)/\(rel)")
+        }
+        // If any file configures Realm encryptionKey, the whole project is covered
+        let hasRealmEncryption = swiftFiles.contains { path in
+            (try? String(contentsOfFile: path, encoding: .utf8))?.contains("encryptionKey") == true
+        }
+        guard !hasRealmEncryption else { return [] }
+        // No encryption found — flag all Realm() call sites
+        var out: [APViolation] = []
+        for path in swiftFiles {
+            guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            let lines = content.components(separatedBy: "\n")
+            let rel = String(path.dropFirst(repoPath.count + 1))
+            for (i, line) in lines.enumerated() {
+                if isComment(line) { continue }
+                let code = stripStrings(line)
+                if code.contains("Realm(") {
+                    out.append(APViolation(file: rel, fullPath: path, line: i + 1, snippet: snippet(line)))
+                    if out.count >= maxViolations { return out }
+                }
+            }
+        }
+        return out
+    }
+
+    static func checkSecretsInConfigFiles(_ repoPath: String) -> [APViolation] {
+        let secretKeys = ["apikey", "api_key", "secret", "password", "passwd", "token",
+                          "auth_key", "private_key", "client_secret", "access_key"]
+        let skipWords = ["example", "test", "dummy", "fake", "sample", "placeholder",
+                         "your_", "xxx", "todo", "changeme", "$(", "${"]
+        var out: [APViolation] = []
+        guard let enumerator = FileManager.default.enumerator(atPath: repoPath) else { return out }
+        for case let rel as String in enumerator {
+            let isXcconfig = rel.hasSuffix(".xcconfig")
+            let isPlist = rel.hasSuffix(".plist")
+            guard isXcconfig || isPlist else { continue }
+            if rel.lowercased().contains("test") { continue }
+            let full = "\(repoPath)/\(rel)"
+            guard let content = try? String(contentsOfFile: full, encoding: .utf8) else { continue }
+            let lines = content.components(separatedBy: "\n")
+
+            if isXcconfig {
+                for (i, line) in lines.enumerated() {
+                    if isComment(line) { continue }
+                    let lower = line.lowercased()
+                    guard secretKeys.contains(where: { lower.contains($0) }) else { continue }
+                    if skipWords.contains(where: { line.contains($0) }) { continue }
+                    let parts = line.components(separatedBy: "=")
+                    guard parts.count >= 2 else { continue }
+                    let value = parts.dropFirst().joined(separator: "=").trimmingCharacters(in: .whitespaces)
+                    if value.count >= 8 && !value.hasPrefix("$(") && !value.hasPrefix("${") {
+                        out.append(APViolation(file: rel, fullPath: full, line: i + 1, snippet: snippet(line)))
+                        if out.count >= maxViolations { break }
+                    }
+                }
+            }
+
+            if isPlist {
+                var pendingSecretKey = false
+                for (i, line) in lines.enumerated() {
+                    if line.contains("<key>") {
+                        let keyName = line.components(separatedBy: "<key>").last?
+                            .components(separatedBy: "</key>").first?.lowercased() ?? ""
+                        pendingSecretKey = secretKeys.contains(where: { keyName.contains($0) })
+                    } else if pendingSecretKey && line.contains("<string>") {
+                        let val = line.components(separatedBy: "<string>").last?
+                            .components(separatedBy: "</string>").first ?? ""
+                        if val.count >= 8 && !skipWords.contains(where: { val.contains($0) }) {
+                            out.append(APViolation(file: rel, fullPath: full, line: i + 1, snippet: snippet(line)))
+                        }
+                        pendingSecretKey = false
+                    } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                        pendingSecretKey = false
+                    }
+                    if out.count >= maxViolations { break }
+                }
+            }
+        }
+        return out
+    }
+
+    static func checkSensitiveURLCaching(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            // URLCache with non-zero disk capacity
+            if code.contains("URLCache(") && line.contains("diskCapacity:") {
+                // Normalize whitespace so "diskCapacity:0" and "diskCapacity: 0" both match
+                let normalized = line.components(separatedBy: .whitespaces)
+                    .filter { !$0.isEmpty }.joined(separator: " ").lowercased()
+                if !normalized.contains("diskcapacity: 0") {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { break }
+                    continue
+                }
+            }
+            // WKWebsiteDataStore.default() persists cookies/auth tokens
+            if code.contains("WKWebsiteDataStore.default()") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // URLSessionConfiguration using the shared disk-backed cache
+            if code.contains("urlCache") &&
+               (code.contains("= URLCache.shared") || code.contains("= .shared")) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Cryptography
+
+    static func checkHardcodedEncryptionKey(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        // let/var with any key-concept name assigned a string literal ≥ 8 chars
+        guard let keyVarPattern = try? NSRegularExpression(
+            pattern: #"(?i)(?:let|var)\s+\w*(?:key|secret|cipher|encrypt|credential|crypto|symmetric)\w*\s*[=:]"#
+        ) else { return [] }
+        guard let literalPattern = try? NSRegularExpression(
+            pattern: #""[^"]{8,}""#
+        ) else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let lineRange = NSRange(line.startIndex..., in: line)
+            // 1. Key-named variable assigned a string literal
+            if keyVarPattern.firstMatch(in: line, range: lineRange) != nil &&
+               literalPattern.firstMatch(in: line, range: lineRange) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            let code = stripStrings(line)
+            // 2. SymmetricKey(data:) or SecKeyCreateWithData fed a literal — most common CryptoKit pattern
+            if (code.contains("SymmetricKey(data:") || code.contains("SecKeyCreateWithData")) &&
+               literalPattern.firstMatch(in: line, range: lineRange) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // 3. [UInt8] array assigned to a key-named variable
+            //    \bkey catches keyBytes/keyData but not monkey (no word boundary before k in "monkey")
+            if code.contains("[UInt8]") && code.contains("= [") &&
+               (code.contains("Key") || code.contains("Secret") || code.contains("Cipher") ||
+                code.range(of: #"\bkey"#, options: .regularExpression) != nil) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    static func checkCBCWithoutMAC(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        let hasCBC = lines.contains {
+            let c = stripStrings($0)
+            return !isComment($0) && (c.contains("kCCModeCBC") || c.contains(".cbc"))
+        }
+        guard hasCBC else { return [] }
+        let hasMAC = lines.contains {
+            let c = stripStrings($0)
+            return c.contains("CCHmac") || c.contains("HMAC") ||
+                   c.contains("kCCModeGCM") || c.contains(".gcm") ||
+                   c.contains("AES.GCM") || c.contains("ChaChaPoly")
+        }
+        guard !hasMAC else { return [] }
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if code.contains("kCCModeCBC") || code.contains(".cbc") {
+                return [viol(filePath, i, lines)]
+            }
+        }
+        return []
+    }
+
+    static func checkPBKDF2Iterations(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        guard let pattern = try? NSRegularExpression(
+            pattern: #"CCKeyDerivationPBKDF\s*\([^,]+,[^,]+,[^,]+,[^,]+,[^,]+,\s*(\d+)"#
+        ) else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            guard line.contains("CCKeyDerivationPBKDF") else { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            if let match = pattern.firstMatch(in: line, range: range),
+               let roundsRange = Range(match.range(at: 1), in: line),
+               let rounds = Int(line[roundsRange]), rounds < 10_000 {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Network Security
+
+    static func checkHardcodedAuthHeader(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let stripped = stripLineComment(line)
+            // setValue/addValue with a literal Bearer/Basic token
+            let hasAuthField = stripped.contains("\"Authorization\"") ||
+                               stripped.contains("forHTTPHeaderField: \"Authorization\"")
+            let hasLiteralToken = stripped.contains("\"Bearer ") || stripped.contains("\"Basic ") ||
+                                  stripped.contains("\"Token ")
+            if hasAuthField && hasLiteralToken {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    static func checkURLSessionArbitraryLoads(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if code.contains(".allowsArbitraryLoads = true") || code.contains("allowsArbitraryLoads: true") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Network — URLSession delegate challenge bypass
+
+    static func checkURLSessionDelegateBypass(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var inMethod = false
+        var braceDepth = 0
+        var bodyEntered = false
+        var hasValidation = false
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if !inMethod {
+                if code.contains("didReceive challenge:") {
+                    inMethod = true; braceDepth = 0; bodyEntered = false; hasValidation = false
+                } else { continue }
+            }
+            for ch in code {
+                if ch == "{" { braceDepth += 1; bodyEntered = true }
+                else if ch == "}" { braceDepth -= 1 }
+            }
+            if code.contains("SecTrustEvaluateWithError") || code.contains("serverTrust") ||
+               code.contains("SecTrustCopyExceptions") || code.contains("SecPolicyCreate") {
+                hasValidation = true
+            }
+            if !hasValidation && code.contains(".useCredential") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { return out }
+            }
+            if bodyEntered && braceDepth <= 0 { inMethod = false }
+        }
+        return out
+    }
+
+    // MARK: Unsafe/Deprecated — UIWebView
+
+    static func checkUIWebView(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            if stripStrings(line).contains("UIWebView") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Privacy — Info.plist permission vs API mismatch (project-wide)
+
+    static func checkPermissionMismatch(_ repoPath: String) -> [APViolation] {
+        let permissionMap: [(key: String, apis: [String], label: String)] = [
+            ("NSMicrophoneUsageDescription",  ["AVAudioSession", "AVAudioRecorder", "AVCaptureDevice"], "Microphone"),
+            ("NSCameraUsageDescription",       ["AVCaptureDevice", "AVCaptureSession", "UIImagePickerController", "PHPickerViewController"], "Camera"),
+            ("NSLocationWhenInUseUsageDescription", ["CLLocationManager", "startUpdatingLocation", "requestWhenInUseAuthorization"], "Location"),
+            ("NSLocationAlwaysUsageDescription",    ["CLLocationManager", "requestAlwaysAuthorization", "startMonitoringSignificantLocationChanges"], "Location Always"),
+            ("NSContactsUsageDescription",     ["CNContactStore", "CNContact"], "Contacts"),
+            ("NSPhotoLibraryUsageDescription", ["PHPhotoLibrary", "PHAsset", "PHImageManager"], "Photo Library"),
+            ("NSBluetoothAlwaysUsageDescription", ["CBCentralManager", "CBPeripheralManager"], "Bluetooth"),
+            ("NSFaceIDUsageDescription",       ["LAContext", "evaluatePolicy"], "Face ID"),
+            ("NSCalendarsUsageDescription",    ["EKEventStore", "EKCalendar"], "Calendars"),
+            ("NSRemindersUsageDescription",    ["EKReminder", "EKEventStore"], "Reminders"),
+        ]
+        guard let enumerator = FileManager.default.enumerator(atPath: repoPath) else { return [] }
+        var plists: [(String, String)] = []
+        var corpus = ""
+        for case let rel as String in enumerator {
+            guard !rel.lowercased().contains("test") else { continue }
+            let full = "\(repoPath)/\(rel)"
+            if rel.hasSuffix("Info.plist") {
+                if let c = try? String(contentsOfFile: full, encoding: .utf8) { plists.append((rel, c)) }
+            } else if rel.hasSuffix(".swift") || rel.hasSuffix(".m") {
+                if let c = try? String(contentsOfFile: full, encoding: .utf8) { corpus += c }
+            }
+        }
+        guard !plists.isEmpty else { return [] }
+        var out: [APViolation] = []
+        for (rel, plist) in plists {
+            let full = "\(repoPath)/\(rel)"
+            let lines = plist.components(separatedBy: "\n")
+            for perm in permissionMap {
+                guard plist.contains(perm.key) else { continue }
+                guard !perm.apis.contains(where: { corpus.contains($0) }) else { continue }
+                for (i, line) in lines.enumerated() where line.contains(perm.key) {
+                    out.append(APViolation(file: rel, fullPath: full, line: i + 1,
+                        snippet: "\(perm.key) declared but no \(perm.label) API usage found"))
+                    break
+                }
+                if out.count >= maxViolations { return out }
+            }
+        }
+        return out
+    }
+
+    // MARK: Privacy — Crash reporter without data-scrubbing config
+
+    static func checkCrashReporterDataLeak(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        let sdkInits = ["PLCrashReporter(", "Crashlytics.crashlytics()", "FirebaseCrashlytics.crashlytics()",
+                        "SentrySDK.start(", "Bugsnag.start(", "BugsnagConfiguration("]
+        let scrubbingHooks = ["beforeSend", "onBeforeSend", "eventProcessor", "beforeBreadcrumb",
+                              "redactedKeys", "setUserIdentifier", "anonymize", "sanitize"]
+        guard lines.contains(where: { l in
+            !isComment(l) && sdkInits.contains(where: { stripStrings(l).contains($0) })
+        }) else { return [] }
+        guard !lines.contains(where: { l in
+            !isComment(l) && scrubbingHooks.contains(where: { stripStrings(l).contains($0) })
+        }) else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if sdkInits.contains(where: { code.contains($0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }

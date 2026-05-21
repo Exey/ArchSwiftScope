@@ -77,7 +77,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
         let swiftFileCount = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
         let repoPath = URL(fileURLWithPath: path).standardizedFileURL.path
         print("\n🚨 Security risk checks · \(swiftFileCount) Swift files")
-        let (apResults, securityScore) = SecurityAnalyzer.runWithScore(files: projectFiles, repoPath: repoPath)
+        let (apResults, securityScore) = SecurityAnalyzer.runWithScore(files: projectFiles, repoPath: repoPath, commitLimit: config.gitCommitLimit)
 
         let priLabel: (APPriority) -> String = {
             switch $0 { case .high: "HIGH"; case .medium: "MED "; case .low: "LOW " }
