@@ -53,6 +53,8 @@ The generated HTML report is a single self-contained file — open it anywhere, 
    - **🗺️ Architecture Graph** — top-level dependency graph
 
 ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_arch.svg)
+
+![ArchSwiftScope](https://exey.github.io/ArchScope/ass_graph.svg)
   
 3. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
    - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
