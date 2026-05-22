@@ -22,23 +22,7 @@ swift build -c release
 ```
 ---
 
-## 🔒 Offline by Design
-
-Every core feature runs **entirely on your machine**:
-
-- **Source parsing** — Apple's native SwiftSyntax, no external services
-- **Dependency graphs & PageRank** — computed locally
-- **Git history analysis** — reads your local `.git` directory
-- **HTML report generation** — self-contained, no CDN links, no external assets
-- **Caching** — actor-based file cache stored on disk
-
-Your code never leaves your machine unless you explicitly enable the optional AI integration and send a query.
-
----
-
-## 📊 What the Report Contains
-
-The generated HTML report is a single self-contained file — open it anywhere, share it, archive it. No internet connection needed to view it.
+## 📊 How HTML Report looks
 
 1. **Summary** — total files, lines of code, declarations by type (structs, classes, enums, protocols, actors), Swift version, deployment targets, app version, and package count
 
@@ -100,20 +84,17 @@ The generated HTML report is a single self-contained file — open it anywhere, 
 
 ---
 
-## 🚀 Quick Start
+## 🔒 Offline by Design
 
-```bash
-cd ArchSwiftScope
+Every core feature runs **entirely on your machine**:
 
-# Build
-swift build
+- **Source parsing** — Apple's native SwiftSyntax, no external services
+- **Dependency graphs & PageRank** — computed locally
+- **Git history analysis** — reads your local `.git` directory
+- **HTML report generation** — self-contained, no CDN links, no external assets
+- **Caching** — actor-based file cache stored on disk
 
-# Analyze a Swift project
-swift run codecontext analyze /path/to/your/swift/project
-
-# See all commands
-swift run codecontext --help
-```
+Your code never leaves your machine unless you explicitly enable the optional AI integration and send a query.
 
 ---
 
@@ -281,7 +262,7 @@ ArchSwiftScope/
 │   ├── Core/
 │   │   ├── AnalysisPipeline.swift         # Shared pipeline logic
 │   │   ├── OOPvsPOPAnalyzer.swift         # OOP vs POP scoring
-│   │   ├── SecurityAnalyzer.swift         # 40-check security index (0–1000)
+│   │   ├── SecurityAnalyzer.swift         # 55-check security index (0–1000)
 │   │   ├── MonkeyPatchedLibs.swift        # Vendored library detection
 │   │   ├── Config/
 │   │   │   └── CodeContextConfig.swift    # Config models + loader
