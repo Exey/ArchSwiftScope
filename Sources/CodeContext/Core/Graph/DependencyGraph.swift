@@ -19,7 +19,7 @@ final class DependencyGraph: @unchecked Sendable {
         let startTime = CFAbsoluteTimeGetCurrent()
         var nameToPath: [String: String] = [:]
 
-        print("   Registering \(parsedFiles.count) vertices...")
+        print("\(ts())  Registering \(parsedFiles.count) vertices...")
         for file in parsedFiles {
             addVertex(file.filePath)
             nameToPath[file.fileNameWithoutExtension] = file.filePath
@@ -29,7 +29,7 @@ final class DependencyGraph: @unchecked Sendable {
         }
 
         // Import-based edges (cross-module)
-        print("   Building import-based edges...")
+        print("\(ts())  Building import-based edges...")
         for source in parsedFiles {
             for importName in source.imports {
                 let baseName = importName.components(separatedBy: ".").last ?? importName
@@ -40,14 +40,14 @@ final class DependencyGraph: @unchecked Sendable {
         }
         let importEdges = edges.count
         let t1 = CFAbsoluteTimeGetCurrent() - startTime
-        print("   Import edges: \(importEdges) (\(String(format: "%.1f", t1))s)")
+        print("\(ts())  Import edges: \(importEdges) (\(String(format: "%.1f", t1))s)")
 
         // Type-reference edges (intra-module) — capped for performance
-        print("   Building type-reference edges...")
+        print("\(ts())  Building type-reference edges...")
         buildTypeReferenceEdges(from: parsedFiles)
         let typeRefEdges = edges.count - importEdges
         let t2 = CFAbsoluteTimeGetCurrent() - startTime
-        print("   Type-reference edges: \(typeRefEdges) (\(String(format: "%.1f", t2))s)")
+        print("\(ts())  Type-reference edges: \(typeRefEdges) (\(String(format: "%.1f", t2))s)")
 
         // ObjC/Swift interop edges via bridging header
         if !bridgingHeaderPath.isEmpty {
@@ -55,14 +55,15 @@ final class DependencyGraph: @unchecked Sendable {
             buildInteropEdges(from: parsedFiles, bridgingHeaderPath: bridgingHeaderPath)
             let interopEdges = edges.count - preInterop
             if interopEdges > 0 {
-                print("   Interop edges: \(interopEdges) (bridging header hub)")
+                print("\(ts())  Interop edges: \(interopEdges) (bridging header hub)")
             }
         }
 
+        print("\(ts())  Detecting cycles...")
         detectCycles()
 
         let t3 = CFAbsoluteTimeGetCurrent() - startTime
-        print("   Graph complete: \(vertices.count) nodes, \(edges.count) edges (\(String(format: "%.1f", t3))s)")
+        print("\(ts())  Graph complete: \(vertices.count) nodes, \(edges.count) edges (\(String(format: "%.1f", t3))s)")
     }
 
     /// Build edges based on type references within each package.
@@ -75,26 +76,37 @@ final class DependencyGraph: @unchecked Sendable {
         }
 
         let totalPackages = byPackage.count
-        print("   Scanning type references across \(totalPackages) modules...")
+        print("\(ts())  Scanning type references across \(totalPackages) modules (parallel)...")
 
-        // Pre-read all file contents in one pass
-        var contentCache: [String: String] = [:]
-        for file in parsedFiles {
-            if let c = try? String(contentsOfFile: file.filePath, encoding: .utf8) {
-                contentCache[file.filePath] = c
-            }
+        // Pre-read all file contents in parallel (one read per file)
+        let allPaths = parsedFiles.map(\.filePath)
+        var rawContents: [String?] = Array(repeating: nil, count: allPaths.count)
+        DispatchQueue.concurrentPerform(iterations: allPaths.count) { idx in
+            rawContents[idx] = try? String(contentsOfFile: allPaths[idx], encoding: .utf8)
         }
-        print("   Cached \(contentCache.count) file contents")
+        var contentCache: [String: String] = [:]
+        for (idx, path) in allPaths.enumerated() {
+            if let c = rawContents[idx] { contentCache[path] = c }
+        }
 
-        for (pkgIdx, (pkgName, packageFiles)) in byPackage.enumerated() {
-            let displayName = pkgName == "__app__" ? "App" : pkgName
-            let cappedFiles: [ParsedFile]
-            if packageFiles.count > 200 {
-                cappedFiles = Array(packageFiles.sorted { $0.lineCount > $1.lineCount }.prefix(200))
-            } else {
-                cappedFiles = packageFiles
-            }
-            print("   [\(pkgIdx+1)/\(totalPackages)] \(displayName): \(packageFiles.count) files")
+        // Sort packages largest-first so big packages start early and don't become stragglers
+        let packagesArray = byPackage
+            .map { (name: $0.key, files: $0.value) }
+            .sorted { $0.files.reduce(0) { $0 + $1.lineCount } > $1.files.reduce(0) { $0 + $1.lineCount } }
+        var localEdgesPerPkg: [[(String, String)]] = Array(repeating: [], count: packagesArray.count)
+
+        // Progress tracking: print a digest line every ~4% of packages completed
+        var completedCount = 0
+        var lastPctPrinted = 0
+        let progressLock = NSLock()
+        let scanStart = CFAbsoluteTimeGetCurrent()
+
+        DispatchQueue.concurrentPerform(iterations: packagesArray.count) { pkgIdx in
+            let pkgStart = CFAbsoluteTimeGetCurrent()
+            let (pkgName, packageFiles) = (packagesArray[pkgIdx].name, packagesArray[pkgIdx].files)
+            let cappedFiles: [ParsedFile] = packageFiles.count > 200
+                ? Array(packageFiles.sorted { $0.lineCount > $1.lineCount }.prefix(200))
+                : packageFiles
 
             var typeToFile: [(name: String, path: String)] = []
             for file in cappedFiles {
@@ -102,25 +114,59 @@ final class DependencyGraph: @unchecked Sendable {
                     typeToFile.append((name: decl.name, path: file.filePath))
                 }
             }
-            guard !typeToFile.isEmpty else { continue }
+            guard !typeToFile.isEmpty else {
+                progressLock.lock()
+                completedCount += 1
+                progressLock.unlock()
+                return
+            }
 
             if typeToFile.count > 500 {
                 let topPaths = Set(cappedFiles.prefix(100).map(\.filePath))
                 typeToFile = typeToFile.filter { topPaths.contains($0.path) }
             }
 
+            var edges: [(String, String)] = []
             for file in cappedFiles {
                 guard let content = contentCache[file.filePath] else { continue }
                 for (typeName, declPath) in typeToFile {
                     guard declPath != file.filePath else { continue }
                     if fastContainsType(content, typeName: typeName) {
-                        addEdge(from: file.filePath, to: declPath)
+                        edges.append((file.filePath, declPath))
                     }
                 }
             }
+            localEdgesPerPkg[pkgIdx] = edges
+
+            let pkgElapsed = CFAbsoluteTimeGetCurrent() - pkgStart
+
+            // Emit a progress line every 4% of packages, and flag slow packages (>3s)
+            progressLock.lock()
+            completedCount += 1
+            let done = completedCount
+            let elapsed = CFAbsoluteTimeGetCurrent() - scanStart
+            let pct = done * 100 / totalPackages
+            let threshold = (pct / 4) * 4
+            let shouldPrint = threshold >= 4 && threshold > lastPctPrinted
+            if shouldPrint { lastPctPrinted = threshold }
+            progressLock.unlock()
+
+            if pkgElapsed > 3.0 {
+                let name = pkgName == "__app__" ? "(app)" : pkgName
+                print("\(ts())  🐘 big module: \(name) · \(cappedFiles.count) files · \(String(format: "%.1fs", pkgElapsed))")
+            }
+            if shouldPrint {
+                print("\(ts())  \(threshold)% · \(done) / \(totalPackages) modules · \(String(format: "%.1fs", elapsed))")
+            }
         }
 
-        // Release cache
+        // Merge edges into the graph sequentially (addEdge is not thread-safe)
+        let totalCollected = localEdgesPerPkg.reduce(0) { $0 + $1.count }
+        print("\(ts())  Merging \(totalCollected.formatted()) type-reference edges...")
+        for edgeList in localEdgesPerPkg {
+            for (src, tgt) in edgeList { addEdge(from: src, to: tgt) }
+        }
+
         contentCache.removeAll()
     }
 
@@ -260,7 +306,7 @@ final class DependencyGraph: @unchecked Sendable {
             return false
         }
         hasCycles = vertices.contains { !visited.contains($0) && dfs($0) }
-        if hasCycles { print("⚠️  Circular dependencies detected in the codebase.") }
+        if hasCycles { print("\(ts()) ⚠️  Circular dependencies detected in the codebase.") }
     }
 
     // MARK: - Topological Sort

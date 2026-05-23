@@ -38,6 +38,15 @@ struct AssetAnalysis {
     var otherHeavyExtensions: Set<String> = []
 }
 
+/// Current wall-clock time as `HH:MM:SS` — prepended to every CLI progress line.
+func ts() -> String {
+    let c = Calendar.current; let n = Date()
+    return String(format: "%02d:%02d:%02d",
+        c.component(.hour, from: n),
+        c.component(.minute, from: n),
+        c.component(.second, from: n))
+}
+
 enum AnalysisPipeline {
 
     struct Result {
@@ -79,7 +88,7 @@ enum AnalysisPipeline {
         if files.count > effectiveConfig.maxFilesAnalyze {
             throw CodeContextError.analysis("Too many files (\(files.count)). Limit: \(effectiveConfig.maxFilesAnalyze)")
         }
-        print("   Found \(files.count) files")
+        print("\(ts())  Found \(files.count) files")
 
         // Detect project metadata
         var metadata = detectProjectMetadata(rootPath: path)
@@ -95,44 +104,44 @@ enum AnalysisPipeline {
         metadata.assets = scanAssets(rootPath: path, config: config)
 
         if !metadata.swiftVersion.isEmpty {
-            print("   🔧 Swift \(metadata.swiftVersion) (from \(metadata.swiftVersionSource))")
+            print("\(ts())  🔧 Swift \(metadata.swiftVersion) (from \(metadata.swiftVersionSource))")
         } else {
-            print("   🔧 Swift version: not detected")
+            print("\(ts())  🔧 Swift version: not detected")
         }
         if !metadata.deploymentTargets.isEmpty {
-            print("   📱 Deployment: \(metadata.deploymentTargets.joined(separator: ", ")) (from \(metadata.deploymentSource))")
+            print("\(ts())  📱 Deployment: \(metadata.deploymentTargets.joined(separator: ", ")) (from \(metadata.deploymentSource))")
         } else {
-            print("   📱 Deployment target: not detected")
+            print("\(ts())  📱 Deployment target: not detected")
         }
         if !metadata.appVersion.isEmpty {
-            print("   🏷️  App version: \(metadata.appVersion) (from \(metadata.appVersionSource))")
+            print("\(ts())  🏷️  App version: \(metadata.appVersion) (from \(metadata.appVersionSource))")
         }
         if !metadata.metalFiles.isEmpty {
-            print("   🔘 Metal shaders: \(metadata.metalFiles.count) files")
+            print("\(ts())  🔘 Metal shaders: \(metadata.metalFiles.count) files")
         }
         if metadata.assets.totalSizeBytes > 0 {
             let mb = Double(metadata.assets.totalSizeBytes) / 1_048_576.0
             let types = metadata.assets.countByType.sorted { $0.value > $1.value }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-            print("   🎨 Assets: \(String(format: "%.1f", mb)) MB (\(types))")
+            print("\(ts())  🎨 Assets: \(String(format: "%.1f", mb)) MB (\(types))")
         }
         if metadata.isMixedObjCSwift {
-            print("   🔀 Mixed ObjC/Swift project detected")
+            print("\(ts())  🔀 Mixed ObjC/Swift project detected")
             if !metadata.bridgingHeaderPath.isEmpty {
-                print("   🌉 Bridging header: \(metadata.bridgingHeaderPath)")
+                print("\(ts())  🌉 Bridging header: \(metadata.bridgingHeaderPath)")
             }
         }
 
         let cache: CacheManager? = (config.enableCache && useCache) ? CacheManager() : nil
         let parser = ParallelParser(cache: cache)
         let parsedFiles = await parser.parseFiles(files)
-        print("   Parsed \(parsedFiles.count) files")
+        print("\(ts())  Parsed \(parsedFiles.count) files")
 
         let moduleNames = Set(parsedFiles.compactMap { $0.packageName.isEmpty ? nil : $0.packageName })
         if !moduleNames.isEmpty {
-            print("   📦 Detected modules: \(moduleNames.sorted().joined(separator: ", "))")
+            print("\(ts())  📦 \(moduleNames.count) modules detected")
         }
 
-        print("📜 Analyzing Git history...")
+        print("\(ts()) 📜 Analyzing Git history...")
         let repoAbsPath = URL(fileURLWithPath: path).standardizedFileURL.path
         let gitAnalyzer = GitAnalyzer(repoPath: repoAbsPath, commitLimit: config.gitCommitLimit)
         let branchName = gitAnalyzer.currentBranch()
@@ -140,11 +149,14 @@ enum AnalysisPipeline {
         let (enrichedFiles, authorFileCounts, churnFiles) = gitAnalyzer.analyze(files: parsedFiles)
         let gitBranchStats = gitAnalyzer.branchStats()
         let gitSemanticStats = gitAnalyzer.semanticStats()
+        print("\(ts())  Git history done")
 
-        print("🕸️  Building dependency graph...")
+        print("\(ts()) 🕸️  Building dependency graph...")
         let graph = DependencyGraph()
         graph.build(from: enrichedFiles, bridgingHeaderPath: metadata.bridgingHeaderPath)
+        print("\(ts())  Computing PageRank...")
         graph.analyze()
+        print("\(ts())  PageRank done")
 
         // Merge: commit counts from globalAuthorStats + accurate filesModified from batch analysis
         var mergedStats = globalAuthorStats
@@ -152,11 +164,11 @@ enum AnalysisPipeline {
             mergedStats[author, default: AuthorStats()].filesModified = fileCount
         }
 
-        print("🐒 Detecting monkey-patched libraries...")
+        print("\(ts()) 🐒 Detecting monkey-patched libraries...")
         let monkeyLibs = MonkeyPatchedLibs.detect(rootPath: path, excludePaths: Set(config.excludePaths))
         if !monkeyLibs.isEmpty {
             let totalFiles = monkeyLibs.reduce(0) { $0 + $1.fileCount }
-            print("   Found \(monkeyLibs.count) vendored libs (\(totalFiles) files)")
+            print("\(ts())  Found \(monkeyLibs.count) vendored libs (\(totalFiles) files)")
         }
 
         return Result(

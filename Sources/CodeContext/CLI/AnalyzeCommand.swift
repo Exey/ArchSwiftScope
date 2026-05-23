@@ -32,84 +32,85 @@ struct AnalyzeCommand: AsyncParsableCommand {
     var skipModules: Bool = false
 
     func run() async throws {
-        print("🚀 Starting ArchSwiftScope analysis for: \(path)")
+        print("\(ts()) 🚀 Starting ArchSwiftScope analysis for: \(path)")
 
         let config = ConfigLoader.load()
         DebugFlags.debugSubproject = debugSubproject || config.debugSubproject
 
         if clearCache {
             await CacheManager().clear()
-            print("🗑️  Cache cleared")
+            print("\(ts()) 🗑️  Cache cleared")
         }
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
-        // Run pipeline
-        print("📂 Scanning repository...")
+        // ── Scan pipeline ────────────────────────────────────────────────────
+        print("\(ts()) 📂 Scanning repository...")
+        let scanT0 = CFAbsoluteTimeGetCurrent()
         let result = try await AnalysisPipeline.run(
             path: path,
             config: config,
             useCache: !noCache,
             verbose: verbose
         )
+        print("\(ts())  Branch: \(result.branchName) · \(stageTime(CFAbsoluteTimeGetCurrent() - scanT0))")
 
         let graph = result.graph
         let enrichedFiles = result.enrichedFiles
 
-        print("   Branch: \(result.branchName)")
-
-        // Show hotspots
-        let hotspots = graph.getTopHotspots(limit: config.hotspotCount)
-        print("\n🗺️  Your Codebase Map")
-        print("├─ 🔥 Hot Zones (Top \(min(5, hotspots.count))):")
-
-        for (index, item) in hotspots.prefix(5).enumerated() {
-            let fileName = URL(fileURLWithPath: item.path).lastPathComponent
-            let prefix = (index == 4 || index == hotspots.count - 1) ? "│   └─" : "│   ├─"
-            print("\(prefix) \(fileName) (\(String(format: "%.4f", item.score)))")
-        }
-
-        // Security risk checks (parallel file I/O)
+        // ── Security risk checks (streaming, parallel per-check) ────────────
         let mpPaths = result.monkeyPatchedLibs.map(\.path)
         let projectFiles = enrichedFiles.filter { f in
             !mpPaths.contains { f.filePath.contains("/\($0)/") }
         }
         let swiftFileCount = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
         let repoPath = URL(fileURLWithPath: path).standardizedFileURL.path
-        print("\n🚨 Security risk checks · \(swiftFileCount) Swift files")
-        let (apResults, securityScore) = SecurityAnalyzer.runWithScore(files: projectFiles, repoPath: repoPath, commitLimit: config.gitCommitLimit)
+
+        let secT0 = CFAbsoluteTimeGetCurrent()
+        print("\n\(ts()) 🚨 Security risk checks · \(swiftFileCount) Swift files")
 
         let priLabel: (APPriority) -> String = {
-            switch $0 { case .high: "HIGH"; case .medium: "MED "; case .low: "LOW " }
+            switch $0 { case .high: return "HIGH"; case .medium: return "MED "; case .low: return "LOW " }
         }
-        for pri in [APPriority.high, .medium, .low] {
-            for r in apResults where r.check.priority == pri {
-                let icon = r.passed ? "✓" : "✗"
-                let name = r.check.name
-                let truncated = name.count > 44 ? String(name.prefix(43)) + "…" : name
-                let padded = truncated.padding(toLength: 44, withPad: " ", startingAt: 0)
-                let count = r.passed ? "—" : "\(r.violations.count)"
-                print("   \(icon) \(priLabel(pri))  \(padded)  \(count)")
+        let (apResults, securityScore) = SecurityAnalyzer.runWithScore(
+            files: projectFiles,
+            repoPath: repoPath,
+            commitLimit: config.gitCommitLimit
+        ) { r in
+            let icon = r.passed ? "✓" : "✗"
+            let name = r.check.name
+            let truncated = name.count > 44 ? String(name.prefix(43)) + "…" : name
+            let padded = truncated.padding(toLength: 44, withPad: " ", startingAt: 0)
+            let countStr: String
+            if r.passed {
+                countStr = "—"
+            } else if r.totalCount > r.violations.count {
+                countStr = "\(r.totalCount) (showing \(r.violations.count))"
+            } else {
+                countStr = "\(r.violations.count)"
             }
+            print("\(ts())  \(icon) \(priLabel(r.check.priority))  \(padded)  \(countStr)")
         }
         let failed = apResults.filter { !$0.passed }.count
         let passed = apResults.filter { $0.passed }.count
-        print("   \(failed) failed · \(passed) passed")
-        print("   🛡️  Security Index: \(securityScore.total) / 1000 · \(securityScore.band.label)")
+        print("\(ts())  \(failed) failed · \(passed) passed · \(stageTime(CFAbsoluteTimeGetCurrent() - secT0))")
+        print("\(ts())  🛡️  Security Index: \(securityScore.total) / 1000 · \(securityScore.band.label)")
 
-        // OOP vs POP analysis
-        print("\n🧬 OOP vs POP · \(swiftFileCount) Swift files")
+        // ── OOP vs POP analysis ──────────────────────────────────────────────
+        let oopT0 = CFAbsoluteTimeGetCurrent()
+        print("\n\(ts()) 🧬 OOP vs POP · \(swiftFileCount) Swift files")
         let oopStats = OOPvsPOPAnalyzer.analyze(files: projectFiles)
         let oopBar: String = {
             let filled = oopStats.popScore / 5
             let empty  = 20 - filled
             return String(repeating: "█", count: filled) + String(repeating: "░", count: empty)
         }()
-        print("   [\(oopBar)] \(oopStats.popScore)% POP")
-        print("   \(oopStats.totalClasses) classes · \(oopStats.finalClasses) final · \(oopStats.totalStructs) structs · \(oopStats.totalProtocols) protocols")
+        print("\(ts())  [\(oopBar)] \(oopStats.popScore)% POP · \(stageTime(CFAbsoluteTimeGetCurrent() - oopT0))")
+        print("\(ts())  \(oopStats.totalClasses) classes · \(oopStats.finalClasses) final · \(oopStats.totalStructs) structs · \(oopStats.totalProtocols) protocols")
 
-        // Generate report
-        print("\n📊 Generating report...")
+        // ── Generate report ──────────────────────────────────────────────────
+        let reportT0 = CFAbsoluteTimeGetCurrent()
+        print("\n\(ts()) 📊 Generating report...")
         let outputDir = "output"
         try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
         let generator = ReportGenerator()
@@ -133,24 +134,21 @@ struct AnalyzeCommand: AsyncParsableCommand {
             securityScore: securityScore,
             skipModules: skipModules
         )
-
         let reportURL = URL(fileURLWithPath: reportPath).standardizedFileURL
-        print("✅ Report: \(reportURL.path)")
+        print("\(ts()) ✅ Report: \(reportURL.path) · \(stageTime(CFAbsoluteTimeGetCurrent() - reportT0))")
 
-        // AI Analysis
+        // ── AI Analysis ──────────────────────────────────────────────────────
         if config.ai.enabled, !config.ai.apiKey.isEmpty {
-            print("\n🤖 Generating AI Insights...")
+            print("\n\(ts()) 🤖 Generating AI Insights...")
             let aiAnalyzer = AICodeAnalyzer(
                 apiKey: config.ai.apiKey,
                 model: config.ai.model,
                 provider: config.ai.provider
             )
-
             if aiAnalyzer.isConfigured {
                 let insights = await aiAnalyzer.batchAnalyze(
                     files: enrichedFiles, graph: graph, limit: 10
                 )
-
                 let aiReportPath = "\(outputDir)/ai-insights.md"
                 var md = "# AI Code Insights\n\n"
                 for (path, insight) in insights {
@@ -161,26 +159,16 @@ struct AnalyzeCommand: AsyncParsableCommand {
                     md += "**Refactoring Tips**: \(insight.refactoringTips.joined(separator: ", "))\n\n"
                 }
                 try md.write(toFile: aiReportPath, atomically: true, encoding: .utf8)
-                print("✨ AI Insights saved to: \(aiReportPath)")
+                print("\(ts()) ✨ AI Insights saved to: \(aiReportPath)")
             } else {
-                print("   ⚠️  AI enabled but not properly configured. Check API key.")
+                print("\(ts())  ⚠️  AI enabled but not properly configured. Check API key.")
             }
         }
 
-        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        let totalSeconds = Int(elapsed)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-        let timeStr: String
-        if hours > 0 {
-            timeStr = "\(hours)h \(minutes)m \(seconds)s"
-        } else if minutes > 0 {
-            timeStr = "\(minutes)m \(seconds)s"
-        } else {
-            timeStr = String(format: "%.1fs", elapsed)
-        }
-        print("\n✨ Complete in \(timeStr)")
+        // ── Final summary ────────────────────────────────────────────────────
+        let total = CFAbsoluteTimeGetCurrent() - startTime
+        let sysInfo = systemInfoLine()
+        print("\n\(ts()) ✨ Complete in \(stageTime(total)) · \(sysInfo)")
 
         if open {
             #if os(macOS)
@@ -190,5 +178,42 @@ struct AnalyzeCommand: AsyncParsableCommand {
             try? process.run()
             #endif
         }
+    }
+
+    // MARK: - Helpers
+
+    private func stageTime(_ t: Double) -> String {
+        let s = Int(t)
+        if s >= 3600 { return "\(s / 3600)h \((s % 3600) / 60)m \(s % 60)s" }
+        if s >= 60   { return "\(s / 60)m \(s % 60)s" }
+        if t >= 1    { return String(format: "%.1fs", t) }
+        return String(format: "%.0fms", t * 1000)
+    }
+
+    private func systemInfoLine() -> String {
+        let cores = ProcessInfo.processInfo.processorCount
+        let ramGB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
+        let osVer = ProcessInfo.processInfo.operatingSystemVersion
+        let os = "macOS \(osVer.majorVersion).\(osVer.minorVersion)"
+        let cpu = cpuBrandShort()
+        let cpuStr = cpu.isEmpty ? "\(cores)-core CPU" : "\(cores)-core \(cpu)"
+        return "\(cpuStr) · \(ramGB) GB RAM · \(os)"
+    }
+
+    private func cpuBrandShort() -> String {
+        var size = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        guard size > 1 else { return "" }
+        var brand = [CChar](repeating: 0, count: size)
+        sysctlbyname("machdep.cpu.brand_string", &brand, &size, nil, 0)
+        let full = String(cString: brand)
+        // Apple Silicon: "Apple M3 Pro" → "M3 Pro"
+        if full.hasPrefix("Apple ") { return String(full.dropFirst(6)) }
+        // Intel: "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz" → "i9-9900K"
+        let tokens = full.components(separatedBy: " ")
+        if let idx = tokens.firstIndex(where: { $0.hasPrefix("i") && $0.contains("-") }) {
+            return tokens[idx]
+        }
+        return full
     }
 }

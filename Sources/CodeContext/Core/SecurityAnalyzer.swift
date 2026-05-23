@@ -134,12 +134,24 @@ struct APCheck {
     /// One-shot project-level scan (plist files, whole-repo absence checks).
     /// Called once with `repoPath` after the per-file pass; ignored when repoPath is empty.
     var projectDetect: ((_ repoPath: String) -> [APViolation])? = nil
+    /// True when `detect` is a no-op stub and all findings come from `projectDetect`.
+    /// Used by the streaming output to defer printing until after the project-level pass.
+    var isProjectOnly: Bool = false
 }
 
 struct APResult {
     let check: APCheck
     let violations: [APViolation]
+    /// Total number of violations found before the `maxViolations` cap was applied.
+    /// Equal to `violations.count` when the cap was not reached.
+    let totalCount: Int
     var passed: Bool { violations.isEmpty }
+
+    init(check: APCheck, violations: [APViolation], totalCount: Int? = nil) {
+        self.check = check
+        self.violations = violations
+        self.totalCount = totalCount ?? violations.count
+    }
 }
 
 // MARK: - Security Score
@@ -212,86 +224,98 @@ struct SecurityScore {
 struct SecurityAnalyzer {
     static let maxViolations = 100
 
-    static func run(files: [ParsedFile], repoPath: String = "", commitLimit: Int = 500) -> [APResult] {
+    /// Runs all checks and streams each result via `onCheckComplete` as it finishes.
+    /// Per-file checks stream immediately; project-only checks stream after the project-level pass.
+    static func run(files: [ParsedFile], repoPath: String = "", commitLimit: Int = 500,
+                    onCheckComplete: ((APResult) -> Void)? = nil) -> [APResult] {
         let checks = allChecks()
         let swiftFiles = files.filter { $0.filePath.hasSuffix(".swift") }
-
-        // Per-check violation buckets; filled concurrently, merged under a lock
-        var violationsPerCheck: [[APViolation]] = Array(repeating: [], count: checks.count)
-        let lock = NSLock()
-
-        // Parallel file I/O: each iteration reads one file and runs all checks on it
-        DispatchQueue.concurrentPerform(iterations: swiftFiles.count) { idx in
-            let filePath = swiftFiles[idx].filePath
-            guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return }
-            let lines = content.components(separatedBy: "\n")
-
-            var local: [(Int, [APViolation])] = []
-            for i in checks.indices {
-                let vs = checks[i].detect(filePath, lines)
-                if !vs.isEmpty { local.append((i, vs)) }
-            }
-            guard !local.isEmpty else { return }
-
-            lock.lock()
-            for (i, vs) in local {
-                let have = violationsPerCheck[i].count
-                if have < maxViolations {
-                    violationsPerCheck[i].append(contentsOf: vs.prefix(maxViolations - have))
-                }
-            }
-            lock.unlock()
-        }
-
-        // C / ObjC / C++ files: run only lowLevelBinary checks (Swift-first tool, limited extension)
         let nativeFiles = files.filter {
             let p = $0.filePath
             return p.hasSuffix(".m") || p.hasSuffix(".mm") || p.hasSuffix(".c") || p.hasSuffix(".cpp")
         }
+
+        // ── Phase 1: load all file contents in parallel (one read per file) ──
+        var swiftContents: [(String, [String])] = Array(repeating: ("", []), count: swiftFiles.count)
+        DispatchQueue.concurrentPerform(iterations: swiftFiles.count) { idx in
+            let fp = swiftFiles[idx].filePath
+            guard let c = try? String(contentsOfFile: fp, encoding: .utf8) else { return }
+            swiftContents[idx] = (fp, c.components(separatedBy: "\n"))
+        }
+        let loadedSwift = swiftContents.filter { !$0.0.isEmpty }
+
+        var nativeContents: [(String, [String])] = Array(repeating: ("", []), count: nativeFiles.count)
         if !nativeFiles.isEmpty {
-            let nativeIndices = checks.indices.filter { checks[$0].category == .lowLevelBinary }
             DispatchQueue.concurrentPerform(iterations: nativeFiles.count) { idx in
-                let filePath = nativeFiles[idx].filePath
-                guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { return }
-                let lines = content.components(separatedBy: "\n")
-                var local: [(Int, [APViolation])] = []
-                for i in nativeIndices {
-                    let vs = checks[i].detect(filePath, lines)
-                    if !vs.isEmpty { local.append((i, vs)) }
-                }
-                guard !local.isEmpty else { return }
-                lock.lock()
-                for (i, vs) in local {
-                    let have = violationsPerCheck[i].count
-                    if have < maxViolations {
-                        violationsPerCheck[i].append(contentsOf: vs.prefix(maxViolations - have))
-                    }
-                }
-                lock.unlock()
+                let fp = nativeFiles[idx].filePath
+                guard let c = try? String(contentsOfFile: fp, encoding: .utf8) else { return }
+                nativeContents[idx] = (fp, c.components(separatedBy: "\n"))
             }
         }
+        let loadedNative = nativeContents.filter { !$0.0.isEmpty }
+        let nativeCheckIndices = Set(checks.indices.filter { checks[$0].category == .lowLevelBinary })
 
-        // Run project-level checks once (plist scans, whole-repo absence checks, etc.)
+        // ── Phase 2: per-check parallel scan ─────────────────────────────────
+        // Each check iterates all in-memory files serially; checks run concurrently.
+        // This lets onCheckComplete stream each check result as soon as it finishes.
+        var results: [APResult] = checks.map { APResult(check: $0, violations: [], totalCount: 0) }
+        let resultsLock = NSLock()
+
+        DispatchQueue.concurrentPerform(iterations: checks.count) { checkIdx in
+            let check = checks[checkIdx]
+            if check.isProjectOnly { return }   // deferred to Phase 3 stream
+
+            var violations: [APViolation] = []
+            var totalCount = 0
+
+            for (fp, lines) in loadedSwift {
+                let vs = check.detect(fp, lines)
+                totalCount += vs.count
+                if violations.count < maxViolations {
+                    violations.append(contentsOf: vs.prefix(maxViolations - violations.count))
+                }
+            }
+            if nativeCheckIndices.contains(checkIdx) {
+                for (fp, lines) in loadedNative {
+                    let vs = check.detect(fp, lines)
+                    totalCount += vs.count
+                    if violations.count < maxViolations {
+                        violations.append(contentsOf: vs.prefix(maxViolations - violations.count))
+                    }
+                }
+            }
+
+            let result = APResult(check: check, violations: violations, totalCount: totalCount)
+            onCheckComplete?(result)    // stream immediately when this check finishes
+
+            resultsLock.lock()
+            results[checkIdx] = result
+            resultsLock.unlock()
+        }
+
+        // ── Phase 3: project-level checks (sequential, plist / whole-repo) ───
         if !repoPath.isEmpty {
             for i in checks.indices {
                 guard let pd = checks[i].projectDetect else { continue }
                 let vs = pd(repoPath)
-                guard !vs.isEmpty else { continue }
-                let have = violationsPerCheck[i].count
-                if have < maxViolations {
-                    violationsPerCheck[i].append(contentsOf: vs.prefix(maxViolations - have))
-                }
+                let cur = results[i]
+                let have = cur.violations.count
+                let extra = have < maxViolations ? Array(vs.prefix(maxViolations - have)) : []
+                results[i] = APResult(
+                    check: cur.check,
+                    violations: cur.violations + extra,
+                    totalCount: cur.totalCount + vs.count
+                )
             }
         }
-
-        var results = checks.indices.map { i in
-            APResult(check: checks[i], violations: violationsPerCheck[i])
+        // Stream project-only checks after project-level pass (their results weren't ready earlier)
+        for i in checks.indices where checks[i].isProjectOnly {
+            onCheckComplete?(results[i])
         }
 
-        // Enrich violations with blame authors (parallel, range-limited)
+        // ── Phase 4: blame enrichment (parallel, range-limited) ───────────────
         if !repoPath.isEmpty {
             let git = GitAnalyzer(repoPath: repoPath, commitLimit: commitLimit)
-            // Build file → needed line numbers (skip project-wide violations with line 0)
             var fileToLines: [String: Set<Int>] = [:]
             for result in results {
                 for v in result.violations where v.line > 0 {
@@ -315,7 +339,7 @@ struct SecurityAnalyzer {
                     updated.author = blameCache[v.fullPath]?[v.line]
                     return updated
                 }
-                return APResult(check: result.check, violations: enriched)
+                return APResult(check: result.check, violations: enriched, totalCount: result.totalCount)
             }
         }
 
@@ -323,8 +347,9 @@ struct SecurityAnalyzer {
     }
 
     /// Runs all checks and also computes the 0...1000 security index.
-    static func runWithScore(files: [ParsedFile], repoPath: String = "", commitLimit: Int = 500) -> (results: [APResult], score: SecurityScore) {
-        let results = run(files: files, repoPath: repoPath, commitLimit: commitLimit)
+    static func runWithScore(files: [ParsedFile], repoPath: String = "", commitLimit: Int = 500,
+                             onCheckComplete: ((APResult) -> Void)? = nil) -> (results: [APResult], score: SecurityScore) {
+        let results = run(files: files, repoPath: repoPath, commitLimit: commitLimit, onCheckComplete: onCheckComplete)
         let swiftFileCount = files.filter { $0.filePath.hasSuffix(".swift") }.count
         let score = computeScore(results, fileCount: swiftFileCount)
         return (results, score)
@@ -350,7 +375,8 @@ struct SecurityAnalyzer {
         for category in SecurityCategory.allCases.sorted(by: { $0.rawValue < $1.rawValue }) {
             let catResults = byCategory[category] ?? []
             let checkCount = catResults.count
-            let violations = catResults.reduce(0) { $0 + $1.violations.count }
+            // Use totalCount (uncapped) so 7823 force-unwraps score more than 100.
+            let violations = catResults.reduce(0) { $0 + $1.totalCount }
 
             let risk: Double
             if checkCount == 0 || violations == 0 {
@@ -358,10 +384,9 @@ struct SecurityAnalyzer {
             } else {
                 // Weighted violation count: HIGH×2, MEDIUM×1, LOW×0.5.
                 // Logistic curve risk = density / (density + C), C=2.
-                // For 1 file + 1 HIGH finding → risk = 0.50 (vs 0.98 with the old exponential),
-                // so small projects are no longer over-penalised.
+                // For 1 file + 1 HIGH finding → risk = 0.50 (vs 0.98 with the old exponential).
                 let weighted = catResults.reduce(0.0) { acc, r in
-                    acc + Double(r.violations.count) * r.check.priority.violationWeight
+                    acc + Double(r.totalCount) * r.check.priority.violationWeight
                 }
                 let density = weighted / denom
                 risk = density / (density + 2.0)
@@ -572,7 +597,8 @@ private extension SecurityAnalyzer {
                 priority: .high,
                 category: .insecureDataStorage,
                 detect: { _, _ in [] },
-                projectDetect: checkSecretsInConfigFiles
+                projectDetect: checkSecretsInConfigFiles,
+                isProjectOnly: true
             ),
             APCheck(
                 name: "Sensitive Responses Persisted by URLCache / WKWebView",
@@ -719,7 +745,8 @@ private extension SecurityAnalyzer {
                 priority: .high,
                 category: .networkSecurity,
                 detect: { _, _ in [] },
-                projectDetect: checkATSDisabled
+                projectDetect: checkATSDisabled,
+                isProjectOnly: true
             ),
             APCheck(
                 name: "WebView JavaScript Injection / Unsafe Configuration",
@@ -811,7 +838,8 @@ private extension SecurityAnalyzer {
                 priority: .medium,
                 category: .binaryProtections,
                 detect: { _, _ in [] },
-                projectDetect: checkJailbreakDetectionAbsent
+                projectDetect: checkJailbreakDetectionAbsent,
+                isProjectOnly: true
             ),
             APCheck(
                 name: "No Anti-Tampering Protections Found",
@@ -819,7 +847,8 @@ private extension SecurityAnalyzer {
                 priority: .medium,
                 category: .binaryProtections,
                 detect: { _, _ in [] },
-                projectDetect: checkAntiTamperingAbsent
+                projectDetect: checkAntiTamperingAbsent,
+                isProjectOnly: true
             ),
 
             // ── Privacy Violations ──────────────────────────────────────────
@@ -843,7 +872,8 @@ private extension SecurityAnalyzer {
                 priority: .medium,
                 category: .privacy,
                 detect: { _, _ in [] },
-                projectDetect: checkPermissionMismatch
+                projectDetect: checkPermissionMismatch,
+                isProjectOnly: true
             ),
             APCheck(
                 name: "Crash Reporter Initialized Without Data Scrubbing",
@@ -860,7 +890,8 @@ private extension SecurityAnalyzer {
                 priority: .high,
                 category: .iosConfiguration,
                 detect: { _, _ in [] },
-                projectDetect: checkFileSharingEnabled
+                projectDetect: checkFileSharingEnabled,
+                isProjectOnly: true
             ),
             APCheck(
                 name: "NSFileProtectionNone in Swift Code",

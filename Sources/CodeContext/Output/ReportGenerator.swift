@@ -242,7 +242,7 @@ struct ReportGenerator {
         let dateFmt = DateFormatter()
         dateFmt.dateFormat = "yyyy-MM-dd"
 
-        print("   Generating HTML sections...")
+        print("\(ts())  Generating HTML sections...")
 
         // ─── 1. Team ───
         // Compute per-author module counts from file git metadata
@@ -425,7 +425,7 @@ struct ReportGenerator {
         }()
 
         // ─── Security Risks ───
-        print("   Running security checks...")
+        print("\(ts())  Running security checks...")
         let resolvedAPResults = apResults.isEmpty
             ? SecurityAnalyzer.run(files: projectFiles, repoPath: repoPath)
             : apResults
@@ -650,24 +650,34 @@ struct ReportGenerator {
             .sorted { $0.totalLines > $1.totalLines }
 
         var packageSections = ""
-        var graphCounter = 0
         var packageGraphScripts = ""
 
         if skipModules {
-            print("   Skipping Packages & Modules (--skip-modules)")
+            print("\(ts())  Skipping Packages & Modules (--skip-modules)")
         } else {
-        print("   Building \(packages.count) package sections...")
+        print("\(ts())  Building \(packages.count) package sections (parallel)...")
 
-        for (pkgIdx, pkg) in packages.enumerated() {
-            if (pkgIdx + 1) % 20 == 0 {
-                print("   Package \(pkgIdx + 1)/\(packages.count)...")
-            }
+        // Pre-capture self properties used inside the concurrent closure
+        let capturedGraph = graph
+        let capturedAppTarget = appTargetName
+        let capturedKindIcon = kindIcon
+        let capturedEsc = esc
+        let capturedVsLink = vsLink
+
+        // Parallel HTML generation — each slot is written exactly once, no lock needed
+        var pkgSectionArr: [String] = Array(repeating: "", count: packages.count)
+        var pkgScriptArr:  [String] = Array(repeating: "", count: packages.count)
+
+        DispatchQueue.concurrentPerform(iterations: packages.count) { pkgIdx in
+            let pkg = packages[pkgIdx]
 
             let allSorted = pkg.files.sorted { $0.lineCount > $1.lineCount }
-            let hasDecl: (ParsedFile) -> Bool = { !$0.declarations.filter { $0.kind != .extension && !Declaration.invalidNames.contains($0.name) }.isEmpty }
+            let hasDecl: (ParsedFile) -> Bool = {
+                !$0.declarations.filter { $0.kind != .extension && !Declaration.invalidNames.contains($0.name) }.isEmpty
+            }
             let swiftFiles = allSorted.filter { $0.filePath.hasSuffix(".swift") && $0.lineCount >= 20 && hasDecl($0) }
-            let objcFiles = allSorted.filter { !$0.filePath.hasSuffix(".swift") && $0.lineCount >= 20 && hasDecl($0) }
-            let isApp = pkg.name == appTargetName
+            let objcFiles  = allSorted.filter { !$0.filePath.hasSuffix(".swift") && $0.lineCount >= 20 && hasDecl($0) }
+            let isApp = pkg.name == capturedAppTarget
             let icon = isApp ? "📱" : "📦"
             let bsTag: String = {
                 guard !isApp else { return "" }
@@ -676,26 +686,25 @@ struct ReportGenerator {
                 return " <span class='bs-badge'>\(bs.rawValue)</span>"
             }()
 
-            func makeFileRows(_ files: [ParsedFile]) -> String {
+            let makeFileRows: ([ParsedFile]) -> String = { files in
                 files.map { file -> String in
                     let decls = file.declarations.filter { $0.kind != .extension && !Declaration.invalidNames.contains($0.name) }
-                    let exts = file.declarations.filter { $0.kind == .extension && !Declaration.invalidNames.contains($0.name) }
-                    var parts: [String] = decls.map { "\(kindIcon($0.kind))&thinsp;\(esc($0.name))" }
-                    parts += exts.map { "🔹&thinsp;\(esc($0.name))" }
+                    let exts  = file.declarations.filter { $0.kind == .extension && !Declaration.invalidNames.contains($0.name) }
+                    var parts: [String] = decls.map { "\(capturedKindIcon($0.kind))&thinsp;\(capturedEsc($0.name))" }
+                    parts += exts.map { "🔹&thinsp;\(capturedEsc($0.name))" }
                     let declStr = parts.isEmpty ? "—" : parts.joined(separator: "&ensp;")
-                    let desc = file.description.isEmpty ? "" : "<div class='file-desc'>💡 \(esc(String(file.description.prefix(120))))</div>"
-                    // Show parent folder in light gray
+                    let desc = file.description.isEmpty ? "" : "<div class='file-desc'>💡 \(capturedEsc(String(file.description.prefix(120))))</div>"
                     let pathComps = file.filePath.components(separatedBy: "/")
                     let folderIdx = max(0, pathComps.count - 2)
                     let folder = pathComps.count >= 2 ? pathComps[folderIdx] + "/" : ""
-                    let folderHtml = folder.isEmpty ? "" : "<span style='color:var(--text3);font-weight:400'>\(esc(folder))</span>"
-                    let fileLink = vsLink(path: file.filePath, label: "<strong>\(esc(file.fileName))</strong>")
+                    let folderHtml = folder.isEmpty ? "" : "<span style='color:var(--text3);font-weight:400'>\(capturedEsc(folder))</span>"
+                    let fileLink = capturedVsLink(file.filePath, "<strong>\(capturedEsc(file.fileName))</strong>", nil)
                     return "<tr><td>\(folderHtml)\(fileLink)\(desc)</td><td class='mono'>\(file.lineCount)</td><td>\(decls.count)</td><td class='decl-tags'>\(declStr)</td></tr>"
                 }.joined(separator: "\n")
             }
 
             let swiftRows = makeFileRows(swiftFiles)
-            let objcRows = makeFileRows(objcFiles)
+            let objcRows  = makeFileRows(objcFiles)
             let fileRows: String
             if !objcFiles.isEmpty && !swiftFiles.isEmpty {
                 fileRows = swiftRows + "\n<tr><td colspan='4' style='background:var(--bg2);padding:4px 10px;font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.05em'>Objective-C</td></tr>\n" + objcRows
@@ -703,26 +712,25 @@ struct ReportGenerator {
                 fileRows = swiftRows + objcRows
             }
 
-            // Declaration graph
-            let graphId = "pkg-graph-\(graphCounter)"
-            graphCounter += 1
-            let declGraphData = buildDeclarationGraph(for: pkg, pageRankScores: graph.pageRankScores)
+            // Declaration graph — use pkgIdx as stable unique ID
+            let graphId = "pkg-graph-\(pkgIdx)"
+            let declGraphData = buildDeclarationGraph(for: pkg, pageRankScores: capturedGraph.pageRankScores)
             let pkgGraphJSON = (try? String(data: JSONEncoder().encode(declGraphData), encoding: .utf8)) ?? "{\"nodes\":[],\"links\":[]}"
             let showGraph = declGraphData.nodes.count >= 2
 
             var statsParts: [String] = []
-            if pkg.structCount > 0 { statsParts.append("🟢 \(pkg.structCount) structs") }
-            if pkg.classCount > 0 { statsParts.append("🔵 \(pkg.classCount) classes") }
-            if pkg.enumCount > 0 { statsParts.append("🟡 \(pkg.enumCount) enums") }
+            if pkg.structCount   > 0 { statsParts.append("🟢 \(pkg.structCount) structs") }
+            if pkg.classCount    > 0 { statsParts.append("🔵 \(pkg.classCount) classes") }
+            if pkg.enumCount     > 0 { statsParts.append("🟡 \(pkg.enumCount) enums") }
             if pkg.protocolCount > 0 { statsParts.append("🟣 \(pkg.protocolCount) protocols") }
-            if pkg.actorCount > 0 { statsParts.append("🔴 \(pkg.actorCount) actors") }
+            if pkg.actorCount    > 0 { statsParts.append("🔴 \(pkg.actorCount) actors") }
             if pkg.extensionCount > 0 { statsParts.append("🔹 \(pkg.extensionCount) extensions") }
 
             let pkgAnchor = pkg.name.replacingOccurrences(of: " ", with: "-")
 
-            packageSections += """
+            pkgSectionArr[pkgIdx] = """
             <div class="package-section" id="pkg-\(pkgAnchor)">
-                <h3>\(icon) \(esc(pkg.name))\(bsTag)
+                <h3>\(icon) \(capturedEsc(pkg.name))\(bsTag)
                     <span class="pkg-stats">\(allSorted.count) files · \(pkg.totalLines.formatted()) lines · \(pkg.realDeclarations.count) declarations</span>
                 </h3>
                 <p class="stats-detail">\(statsParts.joined(separator: " · "))</p>
@@ -735,7 +743,7 @@ struct ReportGenerator {
             """
 
             if showGraph {
-                packageGraphScripts += """
+                pkgScriptArr[pkgIdx] = """
                 {
                     const d = \(pkgGraphJSON);
                     const el = document.getElementById('\(graphId)');
@@ -772,6 +780,9 @@ struct ReportGenerator {
                 """
             }
         }
+
+        packageSections = pkgSectionArr.joined()
+        packageGraphScripts = pkgScriptArr.joined()
 
         // Arch-level graph script (appended after per-package scripts)
         if showArchGraph {
@@ -871,7 +882,7 @@ struct ReportGenerator {
         let allFunctions = projectFiles.compactMap(\.longestFunction)
         let topLongestFuncs = allFunctions.sorted { $0.lineCount > $1.lineCount }.prefix(20)
 
-        print("   Writing HTML...")
+        print("\(ts())  Writing HTML...")
 
         // ─── HTML ───
         let html = """
@@ -1526,7 +1537,10 @@ struct ReportGenerator {
         }
 
         for r in ordered {
-            let count = r.violations.count
+            // Use uncapped totalCount for bar width and label so 7823 force-unwraps
+            // look different from 100, matching the CLI output.
+            let count = r.totalCount
+            let shown = r.violations.count
             let isFail = !r.passed
             let barColor = isFail ? secPriorityColor(r.check.priority) : "#5a8a7a"
             // Per-check bar width: scale absolute count on a log curve so big counts don't blow out.
@@ -1538,9 +1552,7 @@ struct ReportGenerator {
             let statusIcon = isFail ? "✗" : "✓"
             let countLabel: String = {
                 if !isFail { return "0" }
-                return count >= SecurityAnalyzer.maxViolations
-                    ? "\(count) (first \(SecurityAnalyzer.maxViolations))"
-                    : "\(count)"
+                return count > shown ? "\(count) (showing \(shown))" : "\(count)"
             }()
 
             html += """
