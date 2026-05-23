@@ -209,7 +209,7 @@ struct ReportGenerator {
     ]
 
     /// Max declarations to show in one package graph (performance + readability)
-    private let maxGraphDeclarations = 80
+    private let maxGraphDeclarations = 100
 
     func generate(
         graph: DependencyGraph,
@@ -612,8 +612,8 @@ struct ReportGenerator {
         ), encoding: .utf8)) ?? "{\"nodes\":[],\"links\":[]}"
         let showArchGraph = archNodes.count >= 2 && !archLinks.isEmpty
         let archNodeCount = archNodes.count
-        let archLinkDist = archNodeCount > 100 ? 220 : 120
-        let archChargeStr = archNodeCount > 100 ? -600 : -300
+        let archLinkDist = archNodeCount > 100 ? 330 : 180
+        let archChargeStr = archNodeCount > 100 ? -900 : -450
 
         // Architecture card
         let architectureCardHTML: String = {
@@ -748,14 +748,15 @@ struct ReportGenerator {
                     const d = \(pkgGraphJSON);
                     const el = document.getElementById('\(graphId)');
                     if (d.nodes.length > 0 && el) {
+                        const dark = () => document.documentElement.getAttribute('data-theme') === 'dark';
                         const kc = {'class':'#007aff','struct':'#34c759','enum':'#ff9500','actor':'#ff3b30'};
                         const g = ForceGraph()(el)
                             .graphData(d)
                             .nodeLabel(n => n.label + ' (' + n.sublabel + ')\\n' + n.kind)
-                            .nodeVal(n => Math.max(n.score * 3000, 5))
+                            .nodeVal(n => Math.max(Math.pow(n.score, 0.6) * 9000, 5))
                             .nodeColor(n => kc[n.kind] || '#999')
                             .nodeCanvasObject((node, ctx, gs) => {
-                                const r = Math.max(Math.sqrt(Math.max(node.score * 3000, 5)) * 0.8, 3);
+                                const r = Math.max(Math.sqrt(Math.max(Math.pow(node.score, 0.6) * 9000, 5)) * 0.9, 3);
                                 ctx.beginPath();
                                 ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
                                 ctx.fillStyle = kc[node.kind] || '#999';
@@ -763,17 +764,18 @@ struct ReportGenerator {
                                 if (gs > 0.5) {
                                     ctx.font = `${Math.max(10/gs, 3)}px -apple-system, sans-serif`;
                                     ctx.textAlign = 'center';
-                                    ctx.fillStyle = '#333';
+                                    ctx.fillStyle = dark() ? '#e0e0e0' : '#333';
                                     ctx.fillText(node.label, node.x, node.y + r + 10/gs);
                                 }
                             })
                             .linkDirectionalArrowLength(8)
                             .linkDirectionalArrowRelPos(1)
-                            .linkColor(() => 'rgba(0,0,0,0.12)')
+                            .linkColor(() => dark() ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.12)')
                             .width(el.offsetWidth)
                             .height(420);
-                        g.d3Force('charge').strength(-250);
-                        g.d3Force('link').distance(80);
+                        g.d3Force('charge').strength(-380);
+                        g.d3Force('link').distance(120);
+                        __graphs.push(g);
                     }
                 }
 
@@ -791,30 +793,32 @@ struct ReportGenerator {
                 const d = \(archGraphJSON);
                 const el = document.getElementById('arch-graph');
                 if (d.nodes.length > 0 && el) {
+                    const dark = () => document.documentElement.getAttribute('data-theme') === 'dark';
                     const g = ForceGraph()(el)
                         .graphData(d)
                         .nodeLabel(n => n.label + ' (' + n.val + ' files)')
-                        .nodeVal(n => Math.max(n.val * 2, 4))
-                        .nodeColor(() => '#007aff')
+                        .nodeVal(n => Math.max(Math.pow(n.val, 0.7) * 6, 4))
+                        .nodeColor(() => dark() ? '#0a84ff' : '#007aff')
                         .nodeCanvasObject((node, ctx, gs) => {
-                            const r = Math.max(Math.sqrt(Math.max(node.val * 2, 4)) * 1.2, 4);
+                            const r = Math.max(Math.sqrt(Math.max(Math.pow(node.val, 0.7) * 6, 4)) * 1.4, 4);
                             ctx.beginPath();
                             ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-                            ctx.fillStyle = '#007aff';
+                            ctx.fillStyle = dark() ? '#0a84ff' : '#007aff';
                             ctx.fill();
                             if (gs > 0.4) {
                                 ctx.font = `${Math.max(11/gs, 3)}px -apple-system, sans-serif`;
                                 ctx.textAlign = 'center';
-                                ctx.fillStyle = '#333';
+                                ctx.fillStyle = dark() ? '#e0e0e0' : '#333';
                                 ctx.fillText(node.label, node.x, node.y + r + 12/gs);
                             }
                         })
                         .linkDirectionalArrowLength(0)
-                        .linkColor(() => 'rgba(0,0,0,0.2)')
+                        .linkColor(() => dark() ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.2)')
                         .width(el.offsetWidth)
                         .height(500);
                     g.d3Force('charge').strength(\(archChargeStr));
                     g.d3Force('link').distance(\(archLinkDist));
+                    __graphs.push(g);
                 }
             }
 
@@ -887,14 +891,20 @@ struct ReportGenerator {
         // ─── HTML ───
         let html = """
         <!DOCTYPE html>
-        <html lang="en">
+        <html lang="en" data-theme="light">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
             <title>🔬 ArchSwiftScope — \(esc(projectName))</title>
             <style>
-                :root { --bg: #f5f5f7; --card: #fff; --border: #e5e5ea; --text: #1d1d1f; --text2: #424245; --text3: #86868b; --accent: #0071e3; --red: #ff3b30; }
+                :root,[data-theme="light"] { --bg:#f5f5f7;--bg2:#fafafa;--card:#fff;--border:#e5e5ea;--text:#1d1d1f;--text2:#424245;--text3:#86868b;--accent:#0071e3;--red:#ff3b30;--graph-bg:#fafafa; }
+                [data-theme="dark"] { --bg:#1c1c1e;--bg2:#2c2c2e;--card:#2c2c2e;--border:#3a3a3c;--text:#f5f5f7;--text2:#ebebf5;--text3:#8e8e93;--accent:#0a84ff;--red:#ff453a;--graph-bg:#1e1e20; }
+                [data-theme="dark"] body { color-scheme: dark; }
+                [data-theme="dark"] .ap-fail-badge { background:#3a1c1c; }
+                [data-theme="dark"] .card { box-shadow:0 1px 12px rgba(0,0,0,0.35); }
+                .theme-btn { position:absolute;top:20px;right:24px;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.10);transition:background .2s,border-color .2s;line-height:1; }
+                .theme-btn:hover { background:var(--border); }
                 * { box-sizing: border-box; }
                 body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif; margin: 0; padding: 20px; background: var(--bg); color: var(--text); line-height: 1.5; }
                 .container { max-width: 1280px; margin: 0 auto; }
@@ -945,8 +955,8 @@ struct ReportGenerator {
                 .stats-detail { color: var(--text3); font-size: 13px; margin: 4px 0 12px 0; }
                 .file-desc { color: var(--text3); font-size: 12px; font-style: italic; margin-top: 2px; }
                 .decl-tags { font-size: 12px; line-height: 1.8; }
-                .pkg-graph-container { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: #fafafa; }
-                .arch-graph-container { width: 100%; height: 500px; border-radius: 8px; overflow: hidden; background: #fafafa; }
+                .pkg-graph-container { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; overflow: hidden; background: var(--graph-bg); }
+                .arch-graph-container { width: 100%; height: 500px; border-radius: 8px; overflow: hidden; background: var(--graph-bg); }
                 .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
                 .sub-card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
                 .sub-card:last-child { margin-bottom: 0; }
@@ -1065,7 +1075,8 @@ struct ReportGenerator {
         </head>
         <body>
         <div class="container">
-            <div class="card">
+            <div class="card" style="position:relative">
+                <button class="theme-btn" id="theme-btn" title="Toggle dark/light theme">🌙</button>
                 <h1>🔬 ArchSwiftScope 📋 \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
                 <p class="subtitle">Generated \(Date().formatted()) · <span class="branch-badge">\(esc(branchName))</span> branch</p>
                 <div class="summary-grid">
@@ -1295,7 +1306,23 @@ struct ReportGenerator {
             var el = document.getElementById('sec-gauge-desc');
             if (el) el.innerHTML = desc;
         })();
+        var __graphs = [];
         \(packageGraphScripts)
+        (function(){
+            var html = document.documentElement;
+            var btn  = document.getElementById('theme-btn');
+            var saved = localStorage.getItem('archswift-theme') || 'light';
+            html.setAttribute('data-theme', saved);
+            if (btn) btn.textContent = saved === 'dark' ? '☀️' : '🌙';
+            btn && btn.addEventListener('click', function() {
+                var dark = html.getAttribute('data-theme') === 'dark';
+                var next = dark ? 'light' : 'dark';
+                html.setAttribute('data-theme', next);
+                btn.textContent = next === 'dark' ? '☀️' : '🌙';
+                localStorage.setItem('archswift-theme', next);
+                __graphs.forEach(function(g) { try { g.refresh(); } catch(e){} });
+            });
+        })();
         </script>
         </body>
         </html>
@@ -1341,23 +1368,28 @@ struct ReportGenerator {
 
         // Build edges — only class/actor emit outgoing
         let outgoingKinds: Set<Declaration.Kind> = [.class, .actor]
-        var links: [GraphLink] = []
-        var seenEdges: Set<String> = []
-
-        // Read file contents for source declarations only
         let outgoingDecls = allDecls.filter { outgoingKinds.contains($0.kind) }
-        let uniqueFilePaths = Set(outgoingDecls.map(\.filePath))
-        var contentCache: [String: String] = [:]
-        for path in uniqueFilePaths {
-            contentCache[path] = try? String(contentsOfFile: path, encoding: .utf8)
+        let uniqueFilePaths = Array(Set(outgoingDecls.map(\.filePath)))
+
+        // Parallel read + tokenize: O(file_length) once per file, then O(1) per type check
+        var tokenSetsArr: [Set<String>?] = Array(repeating: nil, count: uniqueFilePaths.count)
+        DispatchQueue.concurrentPerform(iterations: uniqueFilePaths.count) { idx in
+            guard let content = try? String(contentsOfFile: uniqueFilePaths[idx], encoding: .utf8) else { return }
+            tokenSetsArr[idx] = graphTokenize(content)
+        }
+        var tokenCache: [String: Set<String>] = [:]
+        for (idx, path) in uniqueFilePaths.enumerated() {
+            if let t = tokenSetsArr[idx] { tokenCache[path] = t }
         }
 
+        var links: [GraphLink] = []
+        var seenEdges: Set<String> = []
         for source in outgoingDecls {
-            guard let content = contentCache[source.filePath] else { continue }
+            guard let tokens = tokenCache[source.filePath] else { continue }
             for target in allDecls where target.name != source.name {
                 let ek = "\(source.name)->\(target.name)"
                 guard !seenEdges.contains(ek) else { continue }
-                if fastContainsType(content, typeName: target.name) {
+                if tokens.contains(target.name) {
                     links.append(GraphLink(source: "\(source.filePath)::\(source.name)", target: "\(target.filePath)::\(target.name)"))
                     seenEdges.insert(ek)
                 }
@@ -1369,16 +1401,27 @@ struct ReportGenerator {
         return GraphData(nodes: connectedNodes, links: links)
     }
 
-    private func fastContainsType(_ content: String, typeName: String) -> Bool {
-        guard content.contains(typeName) else { return false }
-        var searchRange = content.startIndex..<content.endIndex
-        while let range = content.range(of: typeName, range: searchRange) {
-            let before = range.lowerBound > content.startIndex ? content[content.index(before: range.lowerBound)] : Character(" ")
-            let after = range.upperBound < content.endIndex ? content[range.upperBound] : Character(" ")
-            if !before.isWordChar && !after.isWordChar { return true }
-            searchRange = range.upperBound..<content.endIndex
+    private func graphTokenize(_ content: String) -> Set<String> {
+        var tokens = Set<String>()
+        var i = content.startIndex
+        while i < content.endIndex {
+            let c = content[i]
+            if c.isLetter || c == "_" {
+                let start = i
+                var len = 1
+                i = content.index(after: i)
+                while i < content.endIndex {
+                    let nc = content[i]
+                    guard nc.isLetter || nc.isNumber || nc == "_" else { break }
+                    len += 1
+                    i = content.index(after: i)
+                }
+                if len >= 4 { tokens.insert(String(content[start..<i])) }
+            } else {
+                i = content.index(after: i)
+            }
         }
-        return false
+        return tokens
     }
 
     private func kindIcon(_ kind: Declaration.Kind) -> String {

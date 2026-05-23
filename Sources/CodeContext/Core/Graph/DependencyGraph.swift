@@ -67,7 +67,7 @@ final class DependencyGraph: @unchecked Sendable {
     }
 
     /// Build edges based on type references within each package.
-    /// Optimized: reads each file once, uses String.contains + word boundary check.
+    /// Optimized: tokenize files into identifier sets once, then O(1) hash lookups per type check.
     private func buildTypeReferenceEdges(from parsedFiles: [ParsedFile]) {
         var byPackage: [String: [ParsedFile]] = [:]
         for file in parsedFiles {
@@ -78,16 +78,26 @@ final class DependencyGraph: @unchecked Sendable {
         let totalPackages = byPackage.count
         print("\(ts())  Scanning type references across \(totalPackages) modules (parallel)...")
 
-        // Pre-read all file contents in parallel (one read per file)
+        // Pre-read all file contents in parallel, then tokenize into identifier sets.
+        // Each file is tokenized once; type-name checks become O(1) hash lookups.
         let allPaths = parsedFiles.map(\.filePath)
         var rawContents: [String?] = Array(repeating: nil, count: allPaths.count)
         DispatchQueue.concurrentPerform(iterations: allPaths.count) { idx in
             rawContents[idx] = try? String(contentsOfFile: allPaths[idx], encoding: .utf8)
         }
-        var contentCache: [String: String] = [:]
-        for (idx, path) in allPaths.enumerated() {
-            if let c = rawContents[idx] { contentCache[path] = c }
+        var tokenSetsArr: [Set<String>?] = Array(repeating: nil, count: allPaths.count)
+        DispatchQueue.concurrentPerform(iterations: allPaths.count) { idx in
+            guard let content = rawContents[idx] else { return }
+            tokenSetsArr[idx] = tokenizeIdentifiers(content)
         }
+        rawContents = [] // free raw strings; token sets are all we need
+
+        var tokenCache: [String: Set<String>] = [:]
+        tokenCache.reserveCapacity(allPaths.count)
+        for (idx, path) in allPaths.enumerated() {
+            if let t = tokenSetsArr[idx] { tokenCache[path] = t }
+        }
+        tokenSetsArr = []
 
         // Sort packages largest-first so big packages start early and don't become stragglers
         let packagesArray = byPackage
@@ -95,17 +105,14 @@ final class DependencyGraph: @unchecked Sendable {
             .sorted { $0.files.reduce(0) { $0 + $1.lineCount } > $1.files.reduce(0) { $0 + $1.lineCount } }
         var localEdgesPerPkg: [[(String, String)]] = Array(repeating: [], count: packagesArray.count)
 
-        // Progress tracking: print a digest line every ~4% of packages completed
         var completedCount = 0
-        var lastPctPrinted = 0
         let progressLock = NSLock()
-        let scanStart = CFAbsoluteTimeGetCurrent()
 
         DispatchQueue.concurrentPerform(iterations: packagesArray.count) { pkgIdx in
             let pkgStart = CFAbsoluteTimeGetCurrent()
             let (pkgName, packageFiles) = (packagesArray[pkgIdx].name, packagesArray[pkgIdx].files)
-            let cappedFiles: [ParsedFile] = packageFiles.count > 200
-                ? Array(packageFiles.sorted { $0.lineCount > $1.lineCount }.prefix(200))
+            let cappedFiles: [ParsedFile] = packageFiles.count > 3000
+                ? Array(packageFiles.sorted { $0.lineCount > $1.lineCount }.prefix(3000))
                 : packageFiles
 
             var typeToFile: [(name: String, path: String)] = []
@@ -115,49 +122,46 @@ final class DependencyGraph: @unchecked Sendable {
                 }
             }
             guard !typeToFile.isEmpty else {
-                progressLock.lock()
-                completedCount += 1
-                progressLock.unlock()
+                progressLock.lock(); completedCount += 1; progressLock.unlock()
                 return
             }
 
-            if typeToFile.count > 500 {
-                let topPaths = Set(cappedFiles.prefix(100).map(\.filePath))
+            if typeToFile.count > 5000 {
+                let topPaths = Set(cappedFiles.prefix(1000).map(\.filePath))
                 typeToFile = typeToFile.filter { topPaths.contains($0.path) }
             }
 
-            var edges: [(String, String)] = []
-            for file in cappedFiles {
-                guard let content = contentCache[file.filePath] else { continue }
+            // Inner parallelism: parallelize over files within this package.
+            // Each slot is written by exactly one thread — no lock needed.
+            var perFileEdges: [[(String, String)]] = Array(repeating: [], count: cappedFiles.count)
+            DispatchQueue.concurrentPerform(iterations: cappedFiles.count) { fileIdx in
+                let file = cappedFiles[fileIdx]
+                guard let tokens = tokenCache[file.filePath] else { return }
+                var localEdges: [(String, String)] = []
+                // Track which target files already have an edge from this source,
+                // so we stop after the first matching type per (source→target) pair.
+                var seenTargets = Set<String>()
                 for (typeName, declPath) in typeToFile {
-                    guard declPath != file.filePath else { continue }
-                    if fastContainsType(content, typeName: typeName) {
-                        edges.append((file.filePath, declPath))
+                    guard declPath != file.filePath, !seenTargets.contains(declPath) else { continue }
+                    if tokens.contains(typeName) {
+                        localEdges.append((file.filePath, declPath))
+                        seenTargets.insert(declPath)
                     }
                 }
+                perFileEdges[fileIdx] = localEdges
             }
-            localEdgesPerPkg[pkgIdx] = edges
+            localEdgesPerPkg[pkgIdx] = perFileEdges.flatMap { $0 }
 
             let pkgElapsed = CFAbsoluteTimeGetCurrent() - pkgStart
 
-            // Emit a progress line every 4% of packages, and flag slow packages (>3s)
             progressLock.lock()
             completedCount += 1
             let done = completedCount
-            let elapsed = CFAbsoluteTimeGetCurrent() - scanStart
-            let pct = done * 100 / totalPackages
-            let threshold = (pct / 4) * 4
-            let shouldPrint = threshold >= 4 && threshold > lastPctPrinted
-            if shouldPrint { lastPctPrinted = threshold }
             progressLock.unlock()
 
-            if pkgElapsed > 3.0 {
-                let name = pkgName == "__app__" ? "(app)" : pkgName
-                print("\(ts())  🐘 big module: \(name) · \(cappedFiles.count) files · \(String(format: "%.1fs", pkgElapsed))")
-            }
-            if shouldPrint {
-                print("\(ts())  \(threshold)% · \(done) / \(totalPackages) modules · \(String(format: "%.1fs", elapsed))")
-            }
+            let name = pkgName == "__app__" ? "(app)" : pkgName
+            let slowTag = pkgElapsed > 10.0 ? " 🐘" : ""
+            print("\(ts())  [\(done)/\(totalPackages)] \(name): \(cappedFiles.count) files\(slowTag)")
         }
 
         // Merge edges into the graph sequentially (addEdge is not thread-safe)
@@ -167,7 +171,32 @@ final class DependencyGraph: @unchecked Sendable {
             for (src, tgt) in edgeList { addEdge(from: src, to: tgt) }
         }
 
-        contentCache.removeAll()
+        tokenCache.removeAll()
+    }
+
+    /// Tokenize Swift source content into a set of unique identifiers (length ≥ 4).
+    /// Used instead of repeated string scanning: O(file_length) once, then O(1) per type lookup.
+    private func tokenizeIdentifiers(_ content: String) -> Set<String> {
+        var tokens = Set<String>()
+        var i = content.startIndex
+        while i < content.endIndex {
+            let c = content[i]
+            if c.isLetter || c == "_" {
+                let start = i
+                var len = 1
+                i = content.index(after: i)
+                while i < content.endIndex {
+                    let nc = content[i]
+                    guard nc.isLetter || nc.isNumber || nc == "_" else { break }
+                    len += 1
+                    i = content.index(after: i)
+                }
+                if len >= 4 { tokens.insert(String(content[start..<i])) }
+            } else {
+                i = content.index(after: i)
+            }
+        }
+        return tokens
     }
 
     /// Build edges for Swift↔ObjC interop via bridging header and -Swift.h imports.
@@ -215,22 +244,6 @@ final class DependencyGraph: @unchecked Sendable {
                 addEdge(from: file.filePath, to: bridgingFile.filePath)
             }
         }
-    }
-
-    /// Fast type-name check using String.range (no regex compilation overhead).
-    private func fastContainsType(_ content: String, typeName: String) -> Bool {
-        guard content.contains(typeName) else { return false }
-        // Search for typeName with word boundaries
-        var searchRange = content.startIndex..<content.endIndex
-        while let range = content.range(of: typeName, range: searchRange) {
-            let before = range.lowerBound > content.startIndex ? content[content.index(before: range.lowerBound)] : Character(" ")
-            let after = range.upperBound < content.endIndex ? content[range.upperBound] : Character(" ")
-            if !before.isLetterOrDigit && before != "_" && !after.isLetterOrDigit && after != "_" {
-                return true
-            }
-            searchRange = range.upperBound..<content.endIndex
-        }
-        return false
     }
 
     // MARK: - Graph Operations
@@ -331,8 +344,3 @@ final class DependencyGraph: @unchecked Sendable {
     }
 }
 
-// MARK: - Character Extension
-
-private extension Character {
-    var isLetterOrDigit: Bool { isLetter || isNumber }
-}

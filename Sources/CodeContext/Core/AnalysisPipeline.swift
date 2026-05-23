@@ -476,7 +476,7 @@ enum AnalysisPipeline {
         analysis.allFiles = allFiles
         return analysis
     }
-    /// Scans up to 200 .swift files to keep it fast.
+    /// Scans up to 1000 .swift files to keep it fast.
     private static func inferSwiftVersionFromCode(rootPath: String) -> String {
         let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: rootPath).standardizedFileURL
@@ -487,7 +487,7 @@ enum AnalysisPipeline {
 
         var detected = "5.0"
         var filesScanned = 0
-        let maxFiles = 200
+        let maxFiles = 1000
 
 
         // Regex patterns for more precise detection
