@@ -537,8 +537,15 @@ private extension SecurityAnalyzer {
                 detect: checkInsecureRandomUI
             ),
             APCheck(
-                name: "Never Force Unwrap or Force Try (! / try!)",
-                description: "Force-unwrapping a nil optional (`x!`) and force-try (`try!`) both crash the app with a fatal error on failure, producing a poor user experience and no recovery path. Use `if let`, `guard let`, `??`, or `try?`/`do-catch` to handle the absent or error case safely. `try!` violations are listed first.",
+                name: "Never Force Try (try!)",
+                description: "`try!` crashes the app with a fatal error if the throwing expression throws. Use `try?` to get an optional result or `do { try … } catch { … }` to handle the error explicitly.",
+                priority: .high,
+                category: .crashFactors,
+                detect: checkForceTry
+            ),
+            APCheck(
+                name: "Never Force Unwrap (!)",
+                description: "Force-unwrapping a nil optional (`x!`) crashes the app with a fatal error. Use `if let`, `guard let`, or `??` to handle the absent case safely.",
                 priority: .high,
                 category: .crashFactors,
                 detect: checkForceUnwrap
@@ -1032,30 +1039,43 @@ private extension SecurityAnalyzer {
         return out
     }
 
+    static func checkForceTry(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        guard let pattern = try? NSRegularExpression(pattern: #"\btry!\s"#) else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            if pattern.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
     static func checkForceUnwrap(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        guard let unwrapPattern = try? NSRegularExpression(
+        guard let pattern = try? NSRegularExpression(
             pattern: #"[a-zA-Z0-9_\])]!(?!=)(?![a-zA-Z_(])"#
-        ),
-        let tryBangPattern = try? NSRegularExpression(
-            pattern: #"\btry!\s"#
         ) else { return [] }
-        var tryBangs: [APViolation] = []
-        var others: [APViolation] = []
+        var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isComment(line) { continue }
             if trimmed.contains("@IBOutlet") || trimmed.contains("@IBAction") { continue }
+            // Strip as! and try! first — those belong to their own dedicated checks
             let code = stripStrings(line)
-            let range = NSRange(code.startIndex..., in: code)
-            if tryBangPattern.firstMatch(in: code, range: range) != nil {
-                tryBangs.append(viol(filePath, i, lines))
-            } else if unwrapPattern.firstMatch(in: code, range: range) != nil {
-                others.append(viol(filePath, i, lines))
+                .replacingOccurrences(of: "try!", with: "try_")
+                .replacingOccurrences(of: " as!", with: " as_")
+                .replacingOccurrences(of: "(as!", with: "(as_")
+                .replacingOccurrences(of: "\tas!", with: "\tas_")
+            if pattern.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
             }
-            if tryBangs.count + others.count >= maxViolations { break }
         }
-        return Array((tryBangs + others).prefix(maxViolations))
+        return out
     }
 
     static func checkForceCast(_ filePath: String, _ lines: [String]) -> [APViolation] {
