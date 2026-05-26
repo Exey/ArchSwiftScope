@@ -184,6 +184,11 @@ struct OOPvsPOPAnalyzer {
             var localProtoComposition = 0
             var localEnumAssoc = 0
             var localSingleton = 0
+            if !filePath.contains("/Tests/") && !filePath.contains("/Test/") &&
+               (content.contains("static let shared") || content.contains("static var shared") ||
+                content.contains("static let instance") || content.contains("static var instance")) {
+                localSingleton = 1
+            }
             var localGenericFunc = 0
 
             for (lineIdx, line) in lines.enumerated() {
@@ -286,11 +291,6 @@ struct OOPvsPOPAnalyzer {
                 // ── constrained generic functions ──────────────────────────
                 if constrainedGenericRe.firstMatch(in: code, range: range) != nil { localGenericFunc += 1 }
 
-                // ── singletons ─────────────────────────────────────────────
-                if code.contains("static let shared") || code.contains("static var shared") ||
-                   code.contains("static let instance") || code.contains("static var instance") {
-                    localSingleton += 1
-                }
             }
 
             lock.lock()

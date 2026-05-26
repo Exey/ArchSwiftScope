@@ -13,10 +13,10 @@ Built 100% in Swift. **Fully offline. No network required. No telemetry. No acco
 ```bash
 cd ArchSwiftScope
 
-# Projects under 200K lines — just run directly
+# Projects under 300K lines — just run directly
 swift run codecontext analyze ~/path/to/your/project --open
 
-# Large projects (200K+ lines) — release build is 5–10× faster
+# Large projects (300K+ lines) — release build is 5–10× faster
 swift build -c release
 .build/release/codecontext analyze ~/path/to/your/project --open
 ```

@@ -24,8 +24,8 @@ struct CodeContextConfig: Codable {
         // General build/cache
         ".cache", ".tmp", "tmp", "out", "output"
     ]
-    var maxFilesAnalyze: Int = 20000
-    var gitCommitLimit: Int = 1000
+    var maxFilesAnalyze: Int = 30000
+    var gitCommitLimit: Int = 5000
     var enableCache: Bool = true
     var enableParallel: Bool = true
     var hotspotCount: Int = 15

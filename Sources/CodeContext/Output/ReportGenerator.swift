@@ -352,9 +352,10 @@ struct ReportGenerator {
         }()
 
         // Architecture LAYERS — classify files by path patterns
+        let archAnalyzer = ArchAnalyzer()
         var layerCounts: [String: (files: Int, lines: Int)] = [:]
         for file in projectFiles {
-            let layer = classifyLayer(file.filePath)
+            let layer = archAnalyzer.classifyLayer(file.filePath)
             var entry = layerCounts[layer] ?? (files: 0, lines: 0)
             entry.files += 1
             entry.lines += file.lineCount
@@ -403,9 +404,109 @@ struct ReportGenerator {
             return "<div class='arch-layers'>\(items)</div>"
         }()
 
+        // Architecture PATTERN — detect from file/declaration naming conventions
+        print("\(ts())  Detecting architecture pattern...")
+        let archDetection = archAnalyzer.detectPattern(files: projectFiles)
+        if let top = archDetection.top {
+            let alts = archDetection.patterns.dropFirst().map { "\($0.name) \(Int($0.confidence * 100))%" }.joined(separator: ", ")
+            let altStr = alts.isEmpty ? "" : "  (also: \(alts))"
+            print("\(ts())  Architecture: \(top.name) \(Int(top.confidence * 100))%\(altStr)")
+        } else {
+            print("\(ts())  Architecture: not detected")
+        }
+        let archPatternSubCardHTML: String = {
+            let hasTop = archDetection.top.map { $0.confidence >= 0.15 } ?? false
+            guard hasTop || archDetection.commandLetter != nil || archDetection.eventBusLetter != nil else { return "" }
+
+            func makeLetterCard(_ l: ArchLetter, orthogonal: Bool = false) -> String {
+                let healthClass: String
+                switch l.health {
+                case .present: healthClass = "health-present"
+                case .weak:    healthClass = "health-weak"
+                case .missing: healthClass = "health-missing"
+                }
+                let extraClass = orthogonal ? " orthogonal" : ""
+                let primaryCount = l.fileCount > 0 ? l.fileCount : l.declCount
+                let countStr = primaryCount > 0 ? String(primaryCount) : "—"
+                let linkHTML: String = {
+                    guard let path = l.examplePaths.first else { return "" }
+                    let fname = URL(fileURLWithPath: path).lastPathComponent
+                    return "<div class='arch-letter-link'><a href='vscode://file/\(path)'>\(esc(fname))</a></div>"
+                }()
+                return """
+                <div class='arch-letter-card \(healthClass)\(extraClass)'>\
+                <div class='arch-letter-big'>\(esc(l.letter))</div>\
+                <div class='arch-letter-name'>\(esc(l.fullName))</div>\
+                <div class='arch-letter-count'>\(countStr)</div>\
+                <div class='arch-letter-detail'>\(esc(l.detail))</div>\
+                \(linkHTML)\
+                </div>
+                """
+            }
+
+            guard let top = archDetection.top, top.confidence >= 0.15 else {
+                // No arch pattern detected — show Cmd and E standalone if available
+                let cmdCard = archDetection.commandLetter.map { makeLetterCard($0) } ?? ""
+                let eCard = archDetection.eventBusLetter.map { makeLetterCard($0) } ?? ""
+                let allCards = [cmdCard, eCard].filter { !$0.isEmpty }.joined(separator: "\n")
+                guard !allCards.isEmpty else { return "" }
+                return """
+                <div class='arch-pattern-wrap'>
+                <div class='arch-letter-row'>\(allCards)</div>
+                </div>
+                """
+            }
+
+            let patternCards = top.letters.map { makeLetterCard($0) }.joined(separator: "\n")
+            let cmdCard = archDetection.commandLetter.map { makeLetterCard($0, orthogonal: true) } ?? ""
+            let eCard = archDetection.eventBusLetter.map { makeLetterCard($0, orthogonal: true) } ?? ""
+            let modifierCards = [cmdCard, eCard].filter { !$0.isEmpty }
+            let letterCards: String
+            if modifierCards.isEmpty {
+                letterCards = patternCards
+            } else {
+                let sep = "<div class='arch-letter-sep'></div>"
+                letterCards = patternCards + "\n" + sep + "\n" + modifierCards.joined(separator: "\n")
+            }
+
+            let confBars = archDetection.patterns.map { p -> String in
+                let pct = Int(p.confidence * 100)
+                let isTop = p.name == top.name
+                let nameStyle = isTop ? "font-weight:700;color:var(--text)" : "color:var(--text2)"
+                let barColor = isTop ? "var(--accent)" : "var(--text3)"
+                let attrsHTML: String = {
+                    let nonZero = p.letters.filter { $0.fileCount > 0 || $0.declCount > 0 }
+                    if !nonZero.isEmpty {
+                        let attrs = nonZero.map { l -> String in
+                            let count = l.fileCount > 0 ? l.fileCount : l.declCount
+                            return "\(esc(l.fullName)) \(count)"
+                        }.joined(separator: ", ")
+                        return "<span class='arch-conf-attrs'>similarity based on: \(attrs)</span>"
+                    } else if let hint = p.hint {
+                        return "<span class='arch-conf-attrs'>similarity based on: \(esc(hint))</span>"
+                    }
+                    return ""
+                }()
+                return """
+                <div class='arch-conf-row'>\
+                <span class='arch-conf-name' style='\(nameStyle)'>\(esc(p.name))</span>\
+                <div class='arch-conf-track'><div class='arch-conf-fill' style='width:\(pct)%;background:\(barColor)'></div></div>\
+                <span class='arch-conf-pct' style='color:\(barColor)'>\(pct)%</span>\
+                \(attrsHTML)\
+                </div>
+                """
+            }.joined(separator: "\n")
+            return """
+            <div class='arch-pattern-wrap'>
+            <div class='arch-conf-list'>\(confBars)</div>
+            <div class='arch-letter-row'>\(letterCards)</div>
+            </div>
+            """
+        }()
+
         // Architecture COMPONENTS — detect from Apple frameworks used
         let usedAppleFrameworks = classifiedImports[.apple] ?? []
-        let detectedComponents = detectComponents(appleFrameworks: usedAppleFrameworks)
+        let detectedComponents = archAnalyzer.detectComponents(appleFrameworks: usedAppleFrameworks)
         // Every framework name claimed by a detected component — excluded from the raw list below
         let componentCoveredFrameworks: Set<String> = detectedComponents.reduce(into: []) { $0.formUnion($1.frameworks) }
         let componentsHTML: String = {
@@ -415,6 +516,33 @@ struct ReportGenerator {
             }.joined(separator: "\n")
             return "<div class='component-grid'>\(items)</div>"
         }()
+
+        // Design Patterns
+        print("\(ts())  Detecting design patterns...")
+        let detectedPatterns = DesignPatternDetector().detect(files: projectFiles)
+        let designPatternsSubCardHTML: String = {
+            guard !detectedPatterns.isEmpty else { return "" }
+            let byCategory = Dictionary(grouping: detectedPatterns, by: \.category)
+            let cols = PatternCategory.allCases.map { cat -> String in
+                let items = (byCategory[cat] ?? []).map { p -> String in
+                    let fileName = URL(fileURLWithPath: p.examplePath).lastPathComponent
+                    let fileLink = vsLink(path: p.examplePath, label: esc(fileName))
+                    return """
+                    <div class='dp-item'>\
+                    <div class='dp-item-top'><span class='dp-item-name'>\(esc(p.name))</span><span class='dp-item-count'>\(p.count)</span></div>\
+                    <div class='dp-item-detail'>\(esc(p.detail))</div>\
+                    <div class='dp-item-link'>\(fileLink)</div>\
+                    </div>
+                    """
+                }.joined(separator: "\n")
+                return "<div class='dp-col'><div class='dp-col-head'>\(cat.icon) \(cat.rawValue)</div>\(items.isEmpty ? "<div style='color:var(--text3);font-size:12px;font-style:italic'>None detected</div>" : items)</div>"
+            }.joined(separator: "\n")
+            return "<div class='dp-grid'>\(cols)</div>"
+        }()
+        let totalPatternCount = detectedPatterns.count
+        if totalPatternCount > 0 {
+            print("\(ts())  Design patterns: \(totalPatternCount) detected (\(detectedPatterns.map(\.name).joined(separator: ", ")))")
+        }
 
         // Apple Frameworks — exclude any already shown in Components
         let filteredAppleFrameworks = usedAppleFrameworks.subtracting(componentCoveredFrameworks)
@@ -618,6 +746,9 @@ struct ReportGenerator {
         // Architecture card
         let architectureCardHTML: String = {
             var h = "<h2>🏛️ Architecture</h2>"
+            if !archPatternSubCardHTML.isEmpty {
+                h += "<div class='sub-card'>\(archPatternSubCardHTML)</div>"
+            }
             if !layersHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>📐 Layers</h3>\(layersHTML)</div>"
             }
@@ -635,6 +766,9 @@ struct ReportGenerator {
             }
             if !localPackagesSubCardHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
+            }
+            if !designPatternsSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🎨 Design Patterns <span class='count'>(\(totalPatternCount))</span></h3>\(designPatternsSubCardHTML)</div>"
             }
             return h
         }()
@@ -1034,6 +1168,38 @@ struct ReportGenerator {
                 .component-icon { font-size: 22px; flex-shrink: 0; }
                 .component-name { font-weight: 600; font-size: 13px; }
                 .component-detail { font-size: 11px; color: var(--text3); margin-top: 1px; }
+                .arch-pattern-wrap { }
+                .arch-conf-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 16px; }
+                .arch-conf-row { display: flex; align-items: center; gap: 10px; }
+                .arch-conf-name { font-size: 13px; min-width: 72px; font-family: 'SF Mono', Menlo, monospace; }
+                .arch-conf-track { flex: 1; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; max-width: 240px; }
+                .arch-conf-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+                .arch-conf-pct { font-size: 11px; font-family: 'SF Mono', Menlo, monospace; min-width: 32px; }
+                .arch-conf-attrs { font-size: 11px; color: var(--text3); white-space: nowrap; }
+                .arch-letter-row { display: flex; gap: 10px; flex-wrap: wrap; }
+                .arch-letter-card { flex: 1; min-width: 72px; max-width: 130px; background: var(--bg); border-radius: 12px; padding: 14px 10px 12px; text-align: center; }
+                .arch-letter-big { font-size: 34px; font-weight: 800; color: var(--accent); letter-spacing: -1px; line-height: 1; font-family: 'SF Pro Display', -apple-system, sans-serif; }
+                .arch-letter-name { font-size: 11px; font-weight: 600; color: var(--text2); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+                .arch-letter-count { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 8px; line-height: 1; }
+                .arch-letter-detail { font-size: 10px; color: var(--text3); margin-top: 4px; line-height: 1.4; }
+                .arch-letter-link { font-size: 10px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+                .arch-letter-link a { color: var(--accent); text-decoration: none; font-family: 'SF Mono', Menlo, monospace; }
+                .arch-letter-card.health-weak { border: 1px solid #ff9500; }
+                .arch-letter-card.health-missing { opacity: 0.45; border: 1px dashed var(--border); }
+                .arch-letter-card.health-weak .arch-letter-big { color: #ff9500; }
+                .arch-letter-card.health-missing .arch-letter-big { color: var(--text3); }
+                .arch-letter-card.orthogonal { opacity: 0.5; }
+                .arch-letter-sep { width: 1px; background: var(--border); margin: 0 4px; flex-shrink: 0; align-self: stretch; min-height: 60px; }
+                .dp-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+                .dp-col-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); margin-bottom: 8px; }
+                .dp-item { background: var(--bg); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; }
+                .dp-item-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+                .dp-item-letter { font-size: 22px; font-weight: 800; color: var(--accent); margin-right: 5px; font-family: 'SF Pro Display', -apple-system, sans-serif; line-height: 1; flex-shrink: 0; }
+                .dp-item-name { font-size: 13px; font-weight: 600; color: var(--text); }
+                .dp-item-count { font-size: 18px; font-weight: 700; color: var(--accent); font-family: 'SF Mono', Menlo, monospace; flex-shrink: 0; }
+                .dp-item-detail { font-size: 11px; color: var(--text3); margin-top: 3px; }
+                .dp-item-link { font-size: 11px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'SF Mono', Menlo, monospace; }
+                @media (max-width: 768px) { .dp-grid { grid-template-columns: 1fr; } }
                 .bm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
                 .bm-card { background: var(--bg); border-radius: 10px; padding: 12px; text-align: center; }
                 .bm-value { font-size: 22px; font-weight: 700; color: var(--accent); }
@@ -1307,7 +1473,16 @@ struct ReportGenerator {
             if (el) el.innerHTML = desc;
         })();
         var __graphs = [];
-        \(packageGraphScripts)
+        (function() {
+            if (typeof ForceGraph === 'undefined') {
+                [].forEach.call(document.querySelectorAll('[id$="graph"]'), function(el) {
+                    el.style.cssText = 'display:flex;align-items:center;justify-content:center;';
+                    el.innerHTML = '<span style="color:var(--text3);font-size:12px;font-style:italic">Graph unavailable (requires internet connection)</span>';
+                });
+                return;
+            }
+            \(packageGraphScripts)
+        })();
         (function(){
             var html = document.documentElement;
             var btn  = document.getElementById('theme-btn');
@@ -1806,65 +1981,6 @@ struct ReportGenerator {
         """
     }
 
-    // MARK: - Architecture Helpers
-
-    private func classifyLayer(_ filePath: String) -> String {
-        let path = filePath.lowercased()
-        let name = URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent.lowercased()
-        if path.contains("/test") || name.hasSuffix("test") || name.hasSuffix("tests") || name.hasSuffix("spec") || name.hasSuffix("mock") || name.hasSuffix("stub") || name.hasSuffix("fake") { return "Tests" }
-        if path.contains("/api/") || path.contains("/network") || path.contains("/service/") || path.contains("/services/") || path.contains("/endpoint") || name.hasSuffix("api") || name.hasSuffix("service") || name.hasSuffix("client") || name.hasSuffix("endpoint") || name.hasSuffix("request") || name.hasSuffix("response") { return "API / Networking" }
-        if path.contains("/model/") || path.contains("/models/") || path.contains("/entity/") || path.contains("/entities/") || path.contains("/domain/") || name.hasSuffix("model") || name.hasSuffix("entity") || name.hasSuffix("dto") { return "Models" }
-        if path.contains("/viewmodel") || path.contains("/presenter") || path.contains("/interactor") || name.hasSuffix("viewmodel") || name.hasSuffix("presenter") || name.hasSuffix("interactor") || name.hasSuffix("coordinator") { return "UI / Views" }
-        if path.contains("/view/") || path.contains("/views/") || path.contains("/ui/") || path.contains("/scene/") || path.contains("/scenes/") || name.hasSuffix("view") || name.hasSuffix("screen") || name.hasSuffix("cell") || name.hasSuffix("controller") || name.hasSuffix("viewcontroller") { return "UI / Views" }
-        if path.contains("/storage") || path.contains("/persistence") || path.contains("/database") || path.contains("/repository") || name.hasSuffix("repository") || name.hasSuffix("store") || name.hasSuffix("storage") || name.hasSuffix("cache") || name.hasSuffix("dao") { return "Persistence" }
-        if path.contains("/auth") || name.hasSuffix("auth") || name.hasSuffix("authenticator") || name.hasSuffix("authorization") { return "Auth" }
-        if path.contains("/util") || path.contains("/helper") || path.contains("/extension") || name.hasSuffix("util") || name.hasSuffix("helper") || name.hasSuffix("extension") || name.hasSuffix("extensions") || name.hasSuffix("utils") || name.hasSuffix("helpers") { return "Utilities" }
-        if path.contains("/config") || path.contains("/setting") || name.hasSuffix("config") || name.hasSuffix("configuration") || name.hasSuffix("settings") || name.hasSuffix("constants") || name.hasSuffix("constant") { return "Config" }
-        return "Core"
-    }
-
-    private func detectComponents(appleFrameworks: Set<String>) -> [(name: String, detail: String, icon: String, frameworks: Set<String>)] {
-        let checks: [(frameworks: Set<String>, name: String, detail: String, icon: String)] = [
-            (["SwiftUI"], "SwiftUI", "Declarative UI", "🎨"),
-            (["UIKit"], "UIKit", "Imperative UI", "📱"),
-            (["AppKit"], "AppKit", "macOS UI", "🖥️"),
-            (["Combine"], "Combine", "Reactive Streams", "🔄"),
-            (["CoreData"], "CoreData", "Object Graph Persistence", "🗄️"),
-            (["SwiftData"], "SwiftData", "Swift-native Persistence", "💾"),
-            (["ARKit", "RealityKit"], "AR / Reality", "Augmented Reality", "🥽"),
-            (["CoreML", "CreateML"], "CoreML", "Machine Learning", "🧠"),
-            (["MapKit"], "MapKit", "Maps & Location", "🗺️"),
-            (["AVFoundation", "AVKit"], "AVFoundation", "Audio / Video", "🎬"),
-            (["CoreBluetooth"], "Bluetooth", "BLE Communication", "📡"),
-            (["HealthKit"], "HealthKit", "Health Data", "❤️"),
-            (["AuthenticationServices", "LocalAuthentication"], "Auth Services", "Authentication", "🔐"),
-            (["StoreKit"], "StoreKit", "In-App Purchases", "💳"),
-            (["CloudKit"], "CloudKit", "iCloud Sync", "☁️"),
-            (["CryptoKit"], "CryptoKit", "Cryptography", "🔑"),
-            (["Vision"], "Vision", "Computer Vision", "👁️"),
-            (["NaturalLanguage"], "NaturalLanguage", "Text Analysis", "📝"),
-            (["Metal", "MetalKit"], "Metal", "GPU Computing", "🔘"),
-            (["GameKit", "SpriteKit", "GameplayKit"], "Game", "Game Services", "🎮"),
-            (["CoreLocation", "CoreLocationUI"], "Location", "Location Services", "📍"),
-            (["UserNotifications", "PushKit"], "Notifications", "Push & Local", "🔔"),
-            (["WebKit"], "WebKit", "Web Rendering", "🌐"),
-            (["Network", "NetworkExtension"], "Network", "Low-level Networking", "🔗"),
-            (["CoreMotion", "SensorKit"], "Motion / Sensors", "Device Sensors", "📐"),
-            (["Photos", "PhotosUI"], "Photos", "Photo Library", "🖼️"),
-            (["Contacts", "ContactsUI"], "Contacts", "Address Book", "👤"),
-            (["EventKit"], "EventKit", "Calendar & Reminders", "📅"),
-            (["CoreHaptics"], "Haptics", "Haptic Feedback", "📳"),
-            (["SceneKit"], "SceneKit", "3D Scenes", "🧊"),
-            (["AppIntents"], "App Intents", "Siri & Shortcuts", "🎙️"),
-            (["WidgetKit"], "WidgetKit", "Home Screen Widgets", "🔲"),
-            (["SwiftTesting", "XCTest"], "Testing", "Unit & UI Tests", "🧪"),
-            (["Observation"], "Observation", "Swift Observation", "👀"),
-        ]
-        return checks.compactMap { check in
-            let matched = check.frameworks.intersection(appleFrameworks)
-            return matched.isEmpty ? nil : (name: check.name, detail: check.detail, icon: check.icon, frameworks: matched)
-        }
-    }
 }
 
 private extension Character {
