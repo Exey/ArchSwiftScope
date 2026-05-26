@@ -510,7 +510,7 @@ private extension SecurityAnalyzer {
             // --- HIGH ---
             APCheck(
                 name: "Hardcoded Secrets",
-                description: "Hardcoding API keys, passwords, or tokens embeds credentials into version history permanently. Load secrets from environment variables, the Keychain, or a secure configuration system at runtime. Any credential found here must be rotated immediately - consider it compromised.",
+                description: "Hardcoding API keys, passwords, tokens, or raw key material (hex hashes, JWTs) embeds credentials into version history permanently. Load secrets from environment variables, the Keychain, or a secure configuration system at runtime. Any credential found here must be rotated immediately — consider it compromised.",
                 priority: .high,
                 category: .insecureDataStorage,
                 detect: checkHardcodedSecret
@@ -803,7 +803,7 @@ private extension SecurityAnalyzer {
 
             // ── Input/Output Validation ─────────────────────────────────────
             APCheck(
-                name: "SQL Injection (String Interpolation in Queries)",
+                name: "Unsafe String Interpolation in SQL Queries",
                 description: "Building SQL queries with string interpolation (`\"SELECT … WHERE name = '\\(userInput)'\"`) lets a single-quote break the query structure and execute attacker-controlled SQL. Use parameterized queries: prepare the statement with `?` / `:name` placeholders and bind values via `sqlite3_bind_*` so values are never treated as executable SQL.",
                 priority: .high,
                 category: .ioValidation,
@@ -957,18 +957,49 @@ private extension SecurityAnalyzer {
 
     static func checkHardcodedSecret(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        let skipWords = ["example", "test", "dummy", "fake", "sample", "placeholder", "your_", "xxx", "todo", "changeme", "insert", "enter"]
-        guard let pattern = try? NSRegularExpression(
-            pattern: #"(?i)(password|passwd|secret|apiKey|api_key|authKey|token)\s*=\s*"([^"]{8,})""#
+        let skipWords = ["example", "test", "dummy", "fake", "sample", "placeholder",
+                         "your_", "xxx", "todo", "changeme", "insert", "enter", "undefined"]
+        // Word boundaries prevent "linkToken" triggering on keyword "token"
+        guard let keywordPattern = try? NSRegularExpression(
+            pattern: #"(?i)\b(password|passwd|secret|apiKey|api_key|authKey|token|privateKey|private_key|clientSecret|appSecret)\b\s*[=:]\s*"([^"]{8,})""#
+        ) else { return [] }
+        // 32+ consecutive hex chars = MD5 / SHA-1 / SHA-256 hash or raw key material
+        guard let hexPattern = try? NSRegularExpression(
+            pattern: #"=\s*"([0-9a-fA-F]{32,})""#
+        ) else { return [] }
+        // JWT: three dot-separated base64url segments starting with eyJ ({"…)
+        guard let jwtPattern = try? NSRegularExpression(
+            pattern: #""(eyJ[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,})""#
         ) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
+            // Skip CodingKey enum cases — they are JSON key names, not secrets
+            // e.g. `case linkToken = "link_token"` or `case accessToken = "access_token"`
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("case ") { continue }
             let range = NSRange(line.startIndex..., in: line)
-            guard let match = pattern.firstMatch(in: line, range: range),
-                  let valRange = Range(match.range(at: 2), in: line) else { continue }
-            let val = String(line[valRange]).lowercased()
-            if !skipWords.contains(where: { val.contains($0) }) {
+            // Keyword-based detection
+            if let match = keywordPattern.firstMatch(in: line, range: range),
+               let valRange = Range(match.range(at: 2), in: line) {
+                let val = String(line[valRange])
+                let valLower = val.lowercased()
+                // Skip values that look like JSON key names: all-lowercase snake_case, ≤ 40 chars
+                let isJsonKey = valLower.range(of: #"^[a-z][a-z0-9_]*$"#, options: .regularExpression) != nil && val.count <= 40
+                if !isJsonKey && !skipWords.contains(where: { valLower.contains($0) }) {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { break }
+                    continue
+                }
+            }
+            // Hex hash / raw key detection
+            if hexPattern.firstMatch(in: line, range: range) != nil,
+               !skipWords.contains(where: { line.lowercased().contains($0) }) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // JWT detection
+            if jwtPattern.firstMatch(in: line, range: range) != nil {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -1194,15 +1225,16 @@ private extension SecurityAnalyzer {
 
     static func checkSQLInjection(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        let sqlKeywords = ["SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM",
-                           "DROP TABLE", "CREATE TABLE", "WHERE ", "FROM "]
+        // Command-only keywords: WHERE/FROM alone are too common in log messages and
+        // error strings — require a DML/DDL verb so only real query strings are flagged
+        let sqlCommandKeywords = ["SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM",
+                                  "DROP TABLE", "CREATE TABLE", "ALTER TABLE"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
-            // String interpolation inside a SQL-looking string literal
             guard line.contains("\\(") else { continue }
             let upper = line.uppercased()
-            if sqlKeywords.contains(where: { upper.contains($0) }) {
+            if sqlCommandKeywords.contains(where: { upper.contains($0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
