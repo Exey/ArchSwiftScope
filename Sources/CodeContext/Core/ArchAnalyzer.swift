@@ -371,7 +371,7 @@ struct ArchAnalyzer {
                 let n = $0.fileNameWithoutExtension.lowercased()
                 let p = $0.filePath.lowercased()
                 return n.hasSuffix("service") || p.contains("/services/")
-            })
+            }, decl: { $0.lowercased().hasSuffix("service") })
 
             useCase = stats({
                 let n = $0.fileNameWithoutExtension.lowercased()
@@ -388,20 +388,17 @@ struct ArchAnalyzer {
             command = stats({
                 let n = $0.fileNameWithoutExtension.lowercased()
                 let p = $0.filePath.lowercased()
-                return n.hasSuffix("command") || n.contains("command") ||
+                return n.hasSuffix("command") ||
                        p.contains("/commands/") || p.contains("/command/")
-            }, decl: { let l = $0.lowercased()
-                return l.hasSuffix("command") || l.contains("command")
-            })
+            }, decl: { $0.lowercased().hasSuffix("command") })
 
             eventBus = stats({
                 let n = $0.fileNameWithoutExtension.lowercased()
                 let p = $0.filePath.lowercased()
                 let imp = Set($0.imports)
-                let nameMatch = n.contains("eventbus") || n.hasSuffix("events") ||
-                                n.hasSuffix("event") ||
+                let nameMatch = n.contains("eventbus") || n.contains("eventemitter") ||
                                 (n.contains("notification") && !n.hasSuffix("viewcontroller") && !n.hasSuffix("controller"))
-                let pathMatch = p.contains("/events/") || p.contains("/event/")
+                let pathMatch = p.contains("/eventbus/") || p.contains("/event-bus/")
                 let importMatch = imp.contains("EmitterKit") || imp.contains("Signals")
                 return nameMatch || pathMatch || importMatch
             }, decl: { let l = $0.lowercased()
@@ -410,7 +407,7 @@ struct ArchAnalyzer {
             })
 
             notificationNameExts = files.flatMap(\.declarations)
-                .filter { $0.kind == .extension && $0.name == "Notification.Name" }.count
+                .filter { $0.kind == .extension && ($0.name == "Notification.Name" || $0.name == "NSNotification.Name") }.count
 
             let protos = files.flatMap(\.declarations).filter { $0.kind == .protocol }.map(\.name)
             businessLogicProtos     = protos.filter { $0.hasSuffix("BusinessLogic") }.count
@@ -515,6 +512,12 @@ struct ArchAnalyzer {
     private func scoreMVVMC(rc: RoleCounter) -> Double {
         guard rc.viewModel.fileCount + rc.viewModel.declCount >= 1 else { return 0 }
         guard rc.coordinator.fileCount + rc.coordinator.declCount >= 1 else { return 0 }
+
+        let coordTotal   = rc.coordinator.fileCount + rc.coordinator.declCount
+        let serviceTotal = rc.service.fileCount + rc.service.declCount
+        // Defer to MVVM+S when services dominate and coordinators are incidental.
+        if serviceTotal > coordTotal && coordTotal <= 1 { return 0 }
+
         let vmTotal = rc.viewModel.fileCount + rc.viewModel.declCount
         var s = vmTotal >= 2 ? 0.50 : 0.35
         if rc.viewModel.fileCount   >= 3 { s += 0.20 }
@@ -526,12 +529,17 @@ struct ArchAnalyzer {
     private func scoreMVVMS(rc: RoleCounter) -> Double {
         guard rc.viewModel.fileCount + rc.viewModel.declCount >= 1 else { return 0 }
         guard rc.service.fileCount >= 1 else { return 0 }
-        // MVVM+C is more specific when coordinators are present
-        guard rc.coordinator.fileCount + rc.coordinator.declCount == 0 else { return 0 }
+
+        let coordTotal   = rc.coordinator.fileCount + rc.coordinator.declCount
+        let serviceTotal = rc.service.fileCount + rc.service.declCount
+        // Only defer to MVVM+C when coordinators genuinely dominate services.
+        guard serviceTotal >= coordTotal else { return 0 }
+
         let vmTotal = rc.viewModel.fileCount + rc.viewModel.declCount
-        var s = vmTotal >= 2 ? 0.40 : 0.25
+        var s = vmTotal >= 2 ? 0.45 : 0.30
         if rc.viewModel.fileCount >= 3 { s += 0.15 }
-        if rc.service.fileCount   >= 2 { s += 0.20 }
+        if serviceTotal           >= 2 { s += 0.20 }
+        if serviceTotal           >= 4 { s += 0.10 }
         if rc.model.fileCount     >= 1 { s += 0.10 }
         return min(s, 1.0)
     }
@@ -543,9 +551,10 @@ struct ArchAnalyzer {
         if rc.viewModel.fileCount >= 3 { s += 0.20 }
         if rc.model.fileCount     >= 2 { s += 0.15 }
         if rc.view.fileCount + rc.viewController.fileCount >= 2 { s += 0.15 }
-        // Penalty when more-specific variants apply
-        if rc.coordinator.fileCount + rc.coordinator.declCount > 0 { s -= 0.20 }
-        if rc.service.fileCount >= 2 { s -= 0.15 }
+        // Penalty when more-specific variants apply — cap combined so MVVM still appears as runner-up
+        let coordinatorPenalty: Double = rc.coordinator.fileCount + rc.coordinator.declCount > 0 ? 0.20 : 0
+        let servicePenalty: Double = rc.service.fileCount + rc.service.declCount >= 2 ? 0.15 : 0
+        s -= min(coordinatorPenalty + servicePenalty, 0.25)
         return max(0, min(s, 1.0))
     }
 
