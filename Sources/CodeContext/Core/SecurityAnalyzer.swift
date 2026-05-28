@@ -1091,7 +1091,26 @@ private extension SecurityAnalyzer {
             pattern: #"[a-zA-Z0-9_\])]!(?!=)(?![a-zA-Z_(])"#
         ) else { return [] }
         var out: [APViolation] = []
+        var inMultilineString = false
         for (i, line) in lines.enumerated() {
+            // Track multi-line string literals ("""...""").
+            // Count unescaped """ tokens on this line; an odd count flips the in-string state.
+            var scan = line[line.startIndex...]
+            var tripleCount = 0
+            while let r = scan.range(of: "\"\"\"") {
+                tripleCount += 1
+                scan = scan[r.upperBound...]
+            }
+            if inMultilineString {
+                // Odd count on a content/closing line exits the multi-line string.
+                if tripleCount % 2 == 1 { inMultilineString = false }
+                continue // every line inside the literal is string data, not Swift code
+            }
+            // Outside a multi-line string: an odd count means we're entering one.
+            if tripleCount % 2 == 1 { inMultilineString = true }
+            // The opening line itself (e.g. `let x = """`) still contains valid Swift
+            // code before the delimiter — fall through and check it normally.
+
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isComment(line) { continue }
             if trimmed.contains("@IBOutlet") || trimmed.contains("@IBAction") { continue }

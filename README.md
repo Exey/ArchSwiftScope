@@ -20,67 +20,69 @@ swift run codecontext analyze ~/path/to/your/project --open
 swift build -c release
 .build/release/codecontext analyze ~/path/to/your/project --open
 ```
+
 ---
 
 ## 📊 How HTML Report looks
 
 1. **Summary** — total files, lines of code, declarations by type (structs, classes, enums, protocols, actors), Swift version, deployment targets, app version, and package count
 
-![ArchSwiftScope](https://exey.github.io/ArchScope/ass_summary.svg)
+   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_summary.svg)
 
-2. **🏛️ Architecture** — structural decomposition across 5 sub-sections:
+1. **🏛️ Architecture** — structural decomposition across 8 sub-sections:
+2. - **🎨 Arch Pattern** — MV, MVVV, VIPER, RIBs and other
    - **📐 Layers** — files classified by directory/naming patterns into UI/Views, Presentation, Models, API/Networking, Persistence, Auth, Config, Utilities, Tests, Core — with file counts, line counts, and proportional bar chart
    - **🧩 Components** — detected architectural components from Apple framework imports (SwiftUI, UIKit, CoreData, Combine, ARKit, CoreML, and 30+ more)
    - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
    - **📦 External Libraries** — third-party package imports detected across the codebase
    - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
-   - **🗺️ Architecture Graph** — top-level dependency graph
+   - **🗺️ Architecture Graph** — top-level inter-package dependency graph
+   - **🎨 Design Patterns** — detected GoF and architectural patterns (Singleton, Factory, Observer, Coordinator, and more) grouped by category with occurrence counts and example file links
 
-![ArchSwiftScope](https://exey.github.io/ArchScope/ass_arch.svg)
+   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_arch.svg)
 
-![ArchSwiftScope](https://exey.github.io/ArchScope/ass_graph.svg)
-  
+   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_graph.svg)
+
 3. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
    - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
    - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
    - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
    - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
 
-![ArchSwiftScope](https://exey.github.io/ArchScope/ass_oop.svg)
+   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_oop.svg)
 
-4.🚨 **Security Risks** - (55 active checks · index 0–1000)
-   Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
-   
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_sec.svg)
+4. **🚨 Security Risks** — 55 active checks · index 0–1000. Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
 
-5. **🐙 Git Analysis** — full git history intelligence across 5 sub-sections:
+   ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_sec.svg)
+
+5. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
-   - **📊 Commit Activity** — commit metrics like rollback rate
-   - **🌿 Branch Management** — total branch count (local + remote), stale branches (>90 days inactive), and already-merged branches
+   - **🌿 Branch Management** — total branch count (local + remote), avg branch lifetime, time-to-merge, integration delay, rollback rate, peak commit day, stale branches (>90 days inactive), and already-merged branches
+   - **🔀 Branching Model** — role-based classifier that detects **Gitflow**, **Trunk-Based Development**, **GitHub Flow**, **GitLab Flow**, and **OneFlow** from the `.git` commit DAG. Scores all five models against the same evidence and displays ranked confidence bars. 
    - **🔥 Code Churn** — top 15 most frequently changed files by commit count, ranked from highest to lowest
    - **📐 Semantic Standards** — conventional commit compliance rate, semver tag count, and a breakdown of commit prefix types (feat, fix, chore, etc.)
 
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_git.svg)
+   ![ArchSwiftScope Git Analysis](https://exey.github.io/ArchScope/ass_git.svg)
 
 6. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_hot.svg)
+   ![ArchSwiftScope Hot Zones](https://exey.github.io/ArchScope/ass_hot.svg)
 
 7. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
 
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_funcs.svg)
+   ![ArchSwiftScope Longest Functions](https://exey.github.io/ArchScope/ass_funcs.svg)
 
 8. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
 
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_modules.svg)
+   ![ArchSwiftScope Module Insights](https://exey.github.io/ArchScope/ass_modules.svg)
 
 9. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
 
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_pkgs.svg)
+   ![ArchSwiftScope Packages](https://exey.github.io/ArchScope/ass_pkgs.svg)
 
 10. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
-![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_assets.svg)
+   ![ArchSwiftScope Assets](https://exey.github.io/ArchScope/ass_assets.svg)
 
 ---
 
@@ -260,35 +262,40 @@ ArchSwiftScope/
 │   │   ├── EvolutionCommand.swift         # Temporal analysis
 │   │   └── InitCommand.swift              # Config initialization
 │   ├── Core/
-│   │   ├── AnalysisPipeline.swift         # Shared pipeline logic
+│   │   ├── AnalysisPipeline.swift         # Orchestrates all analysis passes
+│   │   ├── ArchAnalyzer.swift             # Architecture pattern + layer classifier
+│   │   ├── DesignPatternDetector.swift    # GoF / architectural pattern detection
 │   │   ├── OOPvsPOPAnalyzer.swift         # OOP vs POP scoring
 │   │   ├── SecurityAnalyzer.swift         # 55-check security index (0–1000)
-│   │   ├── MonkeyPatchedLibs.swift        # Vendored library detection
+│   │   ├── MonkeyPatchedLibs.swift        # Vendored C/C++ library detection
 │   │   ├── Config/
 │   │   │   └── CodeContextConfig.swift    # Config models + loader
 │   │   ├── Cache/
 │   │   │   └── CacheManager.swift         # Actor-based file cache
 │   │   ├── Parser/
-│   │   │   ├── ParsedFile.swift           # Models + protocol
+│   │   │   ├── ParsedFile.swift           # File model + git metadata
 │   │   │   ├── SwiftParser.swift          # Swift source parser
-│   │   │   ├── ObjCParser.swift           # ObjC header parser
-│   │   │   ├── ParserFactory.swift        # Parser dispatch
-│   │   │   └── ParallelParser.swift       # Concurrent parsing
+│   │   │   ├── ObjCParser.swift           # Objective-C header parser
+│   │   │   ├── ParserFactory.swift        # Extension → parser dispatch
+│   │   │   └── ParallelParser.swift       # Concurrent parsing with cache
 │   │   ├── Scanner/
-│   │   │   ├── RepositoryScanner.swift    # Directory walker
-│   │   │   └── GitAnalyzer.swift          # Git history via Process
+│   │   │   ├── RepositoryScanner.swift    # Directory walker + exclusion rules
+│   │   │   └── GitAnalyzer.swift          # Git history, branch stats,
+│   │   │                                  # and branching model detection
+│   │   │                                  # (Gitflow / TBD / GitHub Flow /
+│   │   │                                  #  GitLab Flow / OneFlow)
 │   │   ├── Graph/
-│   │   │   └── DependencyGraph.swift      # Graph + PageRank
+│   │   │   └── DependencyGraph.swift      # Dependency graph + PageRank
 │   │   ├── Generator/
 │   │   │   └── LearningPathGenerator.swift
 │   │   ├── Temporal/
-│   │   │   └── TemporalAnalyzer.swift     # Evolution tracking
+│   │   │   └── TemporalAnalyzer.swift     # Codebase evolution tracking
 │   │   ├── AI/
-│   │   │   └── AICodeAnalyzer.swift       # URLSession-based AI (opt-in)
+│   │   │   └── AICodeAnalyzer.swift       # URLSession AI client (opt-in)
 │   │   └── Exceptions/
 │   │       └── CodeContextError.swift
 │   └── Output/
-│       └── ReportGenerator.swift          # HTML report
+│       └── ReportGenerator.swift          # Self-contained HTML report
 └── Tests/CodeContextTests/
     └── CodeContextTests.swift
 ```

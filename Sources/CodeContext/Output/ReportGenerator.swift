@@ -611,6 +611,64 @@ struct ReportGenerator {
             return h
         }()
 
+        // Git: Branching Model
+        let branchingModelSubCardHTML: String = {
+            let bm = branchStats.branchingModel
+            guard bm.model != .unknown, !bm.modelScores.isEmpty else { return "" }
+            let totalScore = bm.modelScores.reduce(0.0) { $0 + $1.score }
+            guard totalScore > 0 else { return "" }
+
+            // Confidence bars (reuse arch-conf-* classes, widen name column)
+            let confBars = bm.modelScores.map { entry -> String in
+                let pct = Int((entry.score / totalScore) * 100)
+                let isTop = entry.model == bm.model
+                let nameStyle = isTop
+                    ? "font-weight:700;color:var(--text)"
+                    : "color:var(--text2)"
+                let barColor = isTop ? "var(--accent)" : "var(--text3)"
+                let attrs = isTop
+                    ? "<span class='arch-conf-attrs'>\(esc(entry.model.detail))</span>"
+                    : ""
+                return """
+                <div class='arch-conf-row'>\
+                <span class='arch-conf-name bmmodel-conf-name' style='\(nameStyle)'>\(entry.model.icon) \(esc(entry.model.rawValue))</span>\
+                <div class='arch-conf-track'><div class='arch-conf-fill' style='width:\(pct)%;background:\(barColor)'></div></div>\
+                <span class='arch-conf-pct' style='color:\(barColor)'>\(pct)%</span>\
+                \(attrs)\
+                </div>
+                """
+            }.joined(separator: "\n")
+
+            // Evidence signals
+            let signalsHTML: String = {
+                guard !bm.signals.isEmpty else { return "" }
+                let items = bm.signals.map { sig -> String in
+                    "<div class='bmmodel-signal'><span>•</span><span>\(esc(sig))</span></div>"
+                }.joined(separator: "\n")
+                return "<div class='bmmodel-signals'>\(items)</div>"
+            }()
+
+            // Key metric badges (merge ratio, avg lifetime, merges/day)
+            var metricsItems: [String] = []
+            if bm.mergeCommitRatio > 0 {
+                metricsItems.append("merge ratio \(Int(bm.mergeCommitRatio * 100))%")
+            }
+            if branchStats.avgLifetimeDays > 0 {
+                metricsItems.append("avg branch \(String(format: "%.1f", branchStats.avgLifetimeDays))d")
+            }
+            if bm.mergesPerDay > 0 {
+                metricsItems.append("\(String(format: "%.1f", bm.mergesPerDay)) merges/day")
+            }
+            let metricsHTML = metricsItems.isEmpty ? "" :
+                "<p style='font-size:11px;color:var(--text3);margin:10px 0 0;font-family:\"SF Mono\",Menlo,monospace'>\(metricsItems.joined(separator: " · "))</p>"
+
+            return """
+            <div class='arch-conf-list'>\(confBars)</div>
+            \(signalsHTML)
+            \(metricsHTML)
+            """
+        }()
+
         // Git: Code Churn
         let churnSubCard: String = {
             guard !churnFiles.isEmpty else { return "<p style='color:var(--text3)'>No git history available.</p>" }
@@ -1213,6 +1271,9 @@ struct ReportGenerator {
                 .sem-type-badge { background: #f0f4ff; color: #1565c0; border-radius: 6px; padding: 3px 8px; font-size: 12px; }
                 .sem-samples { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
                 .sem-sample { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: var(--text3); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+                .bmmodel-conf-name { min-width: 200px; }
+                .bmmodel-signals { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+                .bmmodel-signal { font-size: 12px; color: var(--text2); display: flex; align-items: flex-start; gap: 6px; }
                 @media (max-width: 768px) {
                     body { padding: 8px; }
                     .card { padding: 14px; border-radius: 12px; }
@@ -1299,13 +1360,14 @@ struct ReportGenerator {
                 </div>
                 """ : "")
                 \(!branchSubCard.isEmpty ? "<div class=\"sub-card\"><h3 class=\"sub-card-title\">🌿 Branch Management</h3>\(branchSubCard)</div>" : "")
-                <div class="sub-card">
-                    <h3 class="sub-card-title">🔥 Code Churn</h3>
-                    \(churnSubCard)
-                </div>
+                \(!branchingModelSubCardHTML.isEmpty ? "<div class=\"sub-card\"><h3 class=\"sub-card-title\">🔀 Branching Model</h3>\(branchingModelSubCardHTML)</div>" : "")
                 <div class="sub-card">
                     <h3 class="sub-card-title">📐 Semantic Standards</h3>
                     \(semanticSubCard)
+                </div>
+                <div class="sub-card">
+                    <h3 class="sub-card-title">🔥 Code Churn</h3>
+                    \(churnSubCard)
                 </div>
             </div>
             <div class="card">

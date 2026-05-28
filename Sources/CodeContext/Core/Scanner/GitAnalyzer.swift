@@ -19,6 +19,54 @@ struct StaleBranchInfo {
     let daysInactive: Int
 }
 
+// MARK: - Branching Model Detection
+
+enum BranchingModelKind: String, CaseIterable {
+    case gitflow      = "Gitflow"
+    case trunkBased   = "Trunk-Based Development"
+    case githubFlow   = "GitHub Flow"
+    case gitlabFlow   = "GitLab Flow"
+    case oneFlow      = "OneFlow"
+    case unknown      = "Unknown"
+
+    var icon: String {
+        switch self {
+        case .gitflow:    return "🌿"
+        case .trunkBased: return "🪵"
+        case .githubFlow: return "🐙"
+        case .gitlabFlow: return "🦊"
+        case .oneFlow:    return "1️⃣"
+        case .unknown:    return "❓"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .gitflow:    return "Long-lived integration branch · release & hotfix tracks"
+        case .trunkBased: return "Single trunk · micro-commits · continuous integration"
+        case .githubFlow: return "Short-lived feature branches merged directly to main"
+        case .gitlabFlow: return "GitHub Flow + cascading environment branches"
+        case .oneFlow:    return "One permanent branch · releases tagged on main"
+        case .unknown:    return "Insufficient history to determine strategy"
+        }
+    }
+}
+
+struct BranchingModelStats {
+    var model: BranchingModelKind = .unknown
+    var confidence: Double = 0              // fraction of total score held by winner
+    var integrationBranch: String = ""      // e.g. "develop"
+    var environmentBranches: [String] = []  // staging, production, …
+    var releasePrefixCount: Int = 0         // release/* branches
+    var hotfixPrefixCount: Int = 0          // hotfix/* branches
+    var mergeCommitRatio: Double = 0        // merge commits / total commits on main
+    var mergesPerDay: Double = 0
+    var hasDualMerges: Bool = false         // same commit merged into main AND integration branch
+    var hasCascadingMerges: Bool = false    // env branches receive merges from main
+    var signals: [String] = []             // human-readable evidence bullets
+    var modelScores: [(model: BranchingModelKind, score: Double)] = []
+}
+
 struct BranchStats {
     var total: Int = 0
     var local: Int = 0
@@ -33,6 +81,7 @@ struct BranchStats {
     var avgTTMDays: Double = 0        // first commit on feature branch → merge
     var avgIntegDelayHours: Double = 0 // last commit on feature branch → merge
     var staleBranches: [StaleBranchInfo] = []
+    var branchingModel: BranchingModelStats = BranchingModelStats()
 }
 
 // MARK: - File Churn Stat
@@ -227,7 +276,217 @@ struct GitAnalyzer {
         stats.avgIntegDelayHours = avg(integDelays)
 
         stats.total = stats.local + stats.remote
+
+        // Detect branching model last (needs totalMainCommits + avgLifetimeDays)
+        stats.branchingModel = detectBranchingModel(
+            primaryBranch: mainBranch,
+            totalMainCommits: stats.totalMainCommits,
+            avgLifetimeDays: stats.avgLifetimeDays
+        )
+
         return stats
+    }
+
+    // MARK: - Branching Model Detector
+
+    /// Role-based classifier: infers Gitflow / TBD / GitHub Flow / GitLab Flow / OneFlow
+    /// from branch names, merge topology, integration tempo, and tag usage.
+    private func detectBranchingModel(
+        primaryBranch: String,
+        totalMainCommits: Int,
+        avgLifetimeDays: Double
+    ) -> BranchingModelStats {
+        var result = BranchingModelStats()
+        guard totalMainCommits > 5 else { return result } // need minimal history
+
+        // ── 1. All branch names (local + remote, deduplicated, normalized) ──────────
+        guard let rawRefs = git(["for-each-ref",
+                                  "--format=%(refname:short)",
+                                  "refs/heads/", "refs/remotes/"]) else { return result }
+
+        let allNames: [String] = Array(Set(
+            rawRefs.split(separator: "\n")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.hasSuffix("/HEAD") }
+                .map { $0.hasPrefix("origin/") ? String($0.dropFirst(7)) : $0 }
+        ))
+
+        let protected: Set<String> = [primaryBranch, "main", "master", "HEAD"]
+
+        // ── 2. Integration branch (long-lived, non-primary) ─────────────────────────
+        let integCandidates = ["develop", "dev", "devel", "development", "integration", "next"]
+        let integBranch = allNames.first { integCandidates.contains($0) }
+        result.integrationBranch = integBranch ?? ""
+
+        // ── 3. Branch prefix classification ─────────────────────────────────────────
+        result.releasePrefixCount = allNames.filter {
+            $0.hasPrefix("release/") || $0.hasPrefix("rel/") || $0.hasPrefix("releases/")
+        }.count
+
+        result.hotfixPrefixCount = allNames.filter {
+            $0.hasPrefix("hotfix/") || $0.hasPrefix("hotfix-") || $0.hasPrefix("hf/")
+        }.count
+
+        // ── 4. Environment branches (GitLab Flow signal) ────────────────────────────
+        let envKeywords = ["staging", "stage", "production", "prod", "preprod", "preview", "qa"]
+        result.environmentBranches = allNames.filter { name in
+            !protected.contains(name) && !integCandidates.contains(name) &&
+            envKeywords.contains { name == $0 || name.hasPrefix("\($0)/") || name.hasPrefix("\($0)-") }
+        }
+
+        // ── 5. Merge-commit ratio on primary branch ─────────────────────────────────
+        if let countStr = git(["rev-list", "--count", "--merges", primaryBranch]),
+           let mergeCount = Int(countStr.trimmingCharacters(in: .whitespacesAndNewlines)),
+           totalMainCommits > 0 {
+            result.mergeCommitRatio = Double(mergeCount) / Double(totalMainCommits)
+        }
+
+        // ── 6. Merges per day ───────────────────────────────────────────────────────
+        if let firstTsStr = git(["log", primaryBranch, "--pretty=format:%at", "--reverse", "-1"]),
+           let firstTs = TimeInterval(firstTsStr.trimmingCharacters(in: .whitespacesAndNewlines)),
+           firstTs > 0 {
+            let ageInDays = max(1.0, (Date().timeIntervalSince1970 - firstTs) / 86400.0)
+            let mergeCount = result.mergeCommitRatio * Double(totalMainCommits)
+            result.mergesPerDay = mergeCount / ageInDays
+        }
+
+        // ── 7. Dual merges (Gitflow signature) ──────────────────────────────────────
+        // Same commit message appears in merges on BOTH primary and integration branch
+        if let ib = integBranch {
+            if let mainMerges = git(["log", primaryBranch, "--merges", "-50", "--pretty=format:%s"]),
+               let integMerges = git(["log", ib, "--merges", "-50", "--pretty=format:%s"]) {
+                let mainSet  = Set(mainMerges.split(separator:  "\n").map(String.init).filter { !$0.isEmpty })
+                let integSet = Set(integMerges.split(separator: "\n").map(String.init).filter { !$0.isEmpty })
+                result.hasDualMerges = mainSet.intersection(integSet).count >= 2
+            }
+        }
+
+        // ── 8. Cascading merges (GitLab Flow signature) ─────────────────────────────
+        for envBranch in result.environmentBranches.prefix(3) {
+            if let log = git(["log", envBranch, "--merges", "-3", "--pretty=format:%s"]),
+               !log.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result.hasCascadingMerges = true
+                break
+            }
+        }
+
+        // ── 9. Weighted scoring ──────────────────────────────────────────────────────
+        var s: [BranchingModelKind: Double] = Dictionary(
+            uniqueKeysWithValues: BranchingModelKind.allCases.filter { $0 != .unknown }.map { ($0, 0.0) }
+        )
+
+        // Integration branch
+        if let ib = integBranch {
+            s[.gitflow,    default: 0] += 40
+            s[.trunkBased, default: 0] -= 20
+            s[.githubFlow, default: 0] -= 10
+            result.signals.append("Integration branch '\(ib)' detected")
+        }
+
+        // Release branches
+        if result.releasePrefixCount > 0 {
+            s[.gitflow, default: 0] += 25
+            result.signals.append("\(result.releasePrefixCount) release/* branch(es)")
+        }
+
+        // Hotfix branches
+        if result.hotfixPrefixCount > 0 {
+            s[.gitflow,  default: 0] += 18
+            s[.oneFlow,  default: 0] += 5
+            result.signals.append("\(result.hotfixPrefixCount) hotfix/* branch(es)")
+        }
+
+        // Dual merges
+        if result.hasDualMerges {
+            s[.gitflow, default: 0] += 35
+            result.signals.append("Dual-merge pattern: same commits landed in both '\(primaryBranch)' and '\(integBranch ?? "")'")
+        }
+
+        // Merge-commit ratio
+        if result.mergeCommitRatio > 0.7 {
+            s[.gitflow, default: 0] += 15
+            result.signals.append("High merge-commit ratio (\(Int(result.mergeCommitRatio * 100))%) on \(primaryBranch)")
+        } else if result.mergeCommitRatio > 0 && result.mergeCommitRatio < 0.2 {
+            s[.trunkBased, default: 0] += 20
+            s[.oneFlow,    default: 0] +=  5
+            result.signals.append("Linear history (\(Int(result.mergeCommitRatio * 100))% merge commits — squash/rebase workflow)")
+        } else if result.mergeCommitRatio >= 0.3 && result.mergeCommitRatio <= 0.7 {
+            s[.gitlabFlow, default: 0] +=  8
+            s[.githubFlow, default: 0] +=  5
+        }
+
+        // Avg branch lifetime
+        if avgLifetimeDays > 0 {
+            let d = String(format: "%.1f", avgLifetimeDays)
+            if avgLifetimeDays < 1.0 {
+                s[.trunkBased, default: 0] += 25
+                s[.githubFlow, default: 0] +=  8
+                result.signals.append("Very short avg branch lifetime (\(d) days) → micro-commit cadence")
+            } else if avgLifetimeDays < 3.0 {
+                s[.githubFlow,  default: 0] += 20
+                s[.trunkBased,  default: 0] +=  8
+                s[.gitlabFlow,  default: 0] +=  8
+                result.signals.append("Short avg branch lifetime (\(d) days)")
+            } else {
+                s[.gitflow, default: 0] += 15
+                result.signals.append("Long avg branch lifetime (\(d) days) → batch integration releases")
+            }
+        }
+
+        // Merge frequency
+        if result.mergesPerDay > 0 {
+            let f = String(format: "%.1f", result.mergesPerDay)
+            if result.mergesPerDay > 3.0 {
+                s[.trunkBased, default: 0] += 30
+                result.signals.append("High merge frequency (\(f) merges/day into \(primaryBranch))")
+            } else if result.mergesPerDay > 1.0 {
+                s[.githubFlow,  default: 0] += 20
+                s[.trunkBased,  default: 0] +=  8
+                s[.gitlabFlow,  default: 0] +=  8
+                result.signals.append("Moderate merge frequency (\(f) merges/day into \(primaryBranch))")
+            } else if result.mergesPerDay < 0.5 {
+                s[.gitflow,  default: 0] += 10
+                s[.oneFlow,  default: 0] +=  5
+            }
+        }
+
+        // GitLab Flow: cascading merges / env branches
+        if result.hasCascadingMerges {
+            s[.gitlabFlow, default: 0] += 50
+            result.signals.append("Cascading merges into environment branches: \(result.environmentBranches.joined(separator: ", "))")
+        } else if !result.environmentBranches.isEmpty {
+            s[.gitlabFlow, default: 0] += 20
+            s[.githubFlow, default: 0] -= 10
+            result.signals.append("Environment branches found: \(result.environmentBranches.joined(separator: ", "))")
+        }
+
+        // OneFlow baseline: no integration + no release branches
+        if integBranch == nil && result.releasePrefixCount == 0 && !result.hasCascadingMerges {
+            s[.oneFlow, default: 0] += 8
+        }
+
+        // GitHub Flow baseline: simple workflow with no special branches
+        if integBranch == nil && result.releasePrefixCount == 0
+            && result.hotfixPrefixCount == 0 && !result.hasCascadingMerges {
+            s[.githubFlow, default: 0] += 15
+            if result.signals.isEmpty {
+                result.signals.append("No integration, release, or hotfix branches — simple feature-branch workflow")
+            }
+        }
+
+        // ── 10. Floor at 0, normalize, pick winner ──────────────────────────────────
+        for key in s.keys { s[key] = max(0, s[key]!) }
+
+        let totalScore = s.values.reduce(0, +)
+        let sortedScores = s.sorted { $0.value > $1.value }
+        result.modelScores = sortedScores.map { (model: $0.key, score: $0.value) }
+
+        if let winner = sortedScores.first, winner.value > 0, totalScore > 0 {
+            result.model = winner.key
+            result.confidence = winner.value / totalScore
+        }
+
+        return result
     }
 
     func semanticStats() -> SemanticStats {
