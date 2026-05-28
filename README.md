@@ -27,7 +27,8 @@ swift build -c release
 
 1. **Summary** — total files, lines of code, declarations by type (structs, classes, enums, protocols, actors), Swift version, deployment targets, app version, and package count
 
-   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_summary.svg)
+![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_summary.svg)
+
 
 1. **🏛️ Architecture** — structural decomposition across 8 sub-sections:
 2. - **🎨 Arch Pattern** — MV, MVVV, VIPER, RIBs and other
@@ -39,50 +40,51 @@ swift build -c release
    - **🗺️ Architecture Graph** — top-level inter-package dependency graph
    - **🎨 Design Patterns** — detected GoF and architectural patterns (Singleton, Factory, Observer, Coordinator, and more) grouped by category with occurrence counts and example file links
 
-   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_arch.svg)
+![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_arch.svg)
 
-   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_graph.svg)
-
-3. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
+![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_graph.svg)
+  
+1. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
    - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
    - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
    - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
    - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
 
-   ![ArchSwiftScope](https://exey.github.io/ArchScope/ass_oop.svg)
+![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_oop.svg)
 
-4. **🚨 Security Risks** — 55 active checks · index 0–1000. Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
+4.🚨 **Security Risks** - (55 active checks · index 0–1000)
+   Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
+   
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_sec.svg)
 
-   ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScope/ass_sec.svg)
-
-5. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
+1. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
    - **🌿 Branch Management** — total branch count (local + remote), avg branch lifetime, time-to-merge, integration delay, rollback rate, peak commit day, stale branches (>90 days inactive), and already-merged branches
    - **🔀 Branching Model** — role-based classifier that detects **Gitflow**, **Trunk-Based Development**, **GitHub Flow**, **GitLab Flow**, and **OneFlow** from the `.git` commit DAG. Scores all five models against the same evidence and displays ranked confidence bars. 
    - **🔥 Code Churn** — top 15 most frequently changed files by commit count, ranked from highest to lowest
    - **📐 Semantic Standards** — conventional commit compliance rate, semver tag count, and a breakdown of commit prefix types (feat, fix, chore, etc.)
 
-   ![ArchSwiftScope Git Analysis](https://exey.github.io/ArchScope/ass_git.svg)
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_git.svg)
 
-6. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+1. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
-   ![ArchSwiftScope Hot Zones](https://exey.github.io/ArchScope/ass_hot.svg)
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_hot.svg)
 
 7. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
 
-   ![ArchSwiftScope Longest Functions](https://exey.github.io/ArchScope/ass_funcs.svg)
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_funcs.svg)
 
 8. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
 
-   ![ArchSwiftScope Module Insights](https://exey.github.io/ArchScope/ass_modules.svg)
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_modules.svg)
 
 9. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
 
-   ![ArchSwiftScope Packages](https://exey.github.io/ArchScope/ass_pkgs.svg)
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_pkgs.svg)
 
 10. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
-   ![ArchSwiftScope Assets](https://exey.github.io/ArchScope/ass_assets.svg)
+![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_assets.svg)
 
 ---
 
