@@ -30,8 +30,8 @@ swift build -c release
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_summary.svg)
 
 
-1. **🏛️ Architecture** — structural decomposition across 8 sub-sections:
-2. - **🎨 Arch Pattern** — MV, MVVV, VIPER, RIBs and other
+2. **🏛️ Architecture** — structural decomposition across 8 sub-sections:
+   - **🎨 Arch Pattern** — MV, MVVV, VIPER, RIBs and other
    - **📐 Layers** — files classified by directory/naming patterns into UI/Views, Presentation, Models, API/Networking, Persistence, Auth, Config, Utilities, Tests, Core — with file counts, line counts, and proportional bar chart
    - **🧩 Components** — detected architectural components from Apple framework imports (SwiftUI, UIKit, CoreData, Combine, ARKit, CoreML, and 30+ more)
    - **🍎 Apple Frameworks** — all Apple SDK frameworks used, as a searchable tag cloud
@@ -44,7 +44,7 @@ swift build -c release
 
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_graph.svg)
   
-1. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
+3. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
    - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
    - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
    - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
@@ -57,7 +57,7 @@ swift build -c release
    
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_sec.svg)
 
-1. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
+5. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
    - **🌿 Branch Management** — total branch count (local + remote), avg branch lifetime, time-to-merge, integration delay, rollback rate, peak commit day, stale branches (>90 days inactive), and already-merged branches
    - **🔀 Branching Model** — role-based classifier that detects **Gitflow**, **Trunk-Based Development**, **GitHub Flow**, **GitLab Flow**, and **OneFlow** from the `.git` commit DAG. Scores all five models against the same evidence and displays ranked confidence bars. 
@@ -66,7 +66,7 @@ swift build -c release
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_git.svg)
 
-1. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+6. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_hot.svg)
 
