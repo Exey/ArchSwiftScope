@@ -50,6 +50,20 @@ struct TrafficScanner {
         "Package.swift", "Package.resolved", "Project.swift", "Podfile",
     ]
 
+    // File name suffixes that indicate test, spec, or project-generation code.
+    // URLs in these files are fixture data, not runtime connections.
+    private static let skipSuffixes: [String] = [
+        "Tests.swift", "Test.swift", "Spec.swift", "Specs.swift",
+        "TestCase.swift", "UITests.swift",
+    ]
+
+    // Path components that identify test / spec / tooling directories.
+    private static let skipPathComponents: [String] = [
+        "/Tests/", "/Test/", "/Specs/", "/Spec/", "/UITests/",
+        "/UnitTests/", "/IntegrationTests/", "/TestHelpers/",
+        "/Fixtures/", "/Mocks/", "/Stubs/", "/ProjectSpec/",
+    ]
+
     func scan(files: [ParsedFile]) -> TrafficResult {
         var result = TrafficResult()
         var seenIn  = Set<String>()
@@ -62,6 +76,8 @@ struct TrafficScanner {
 
             if Self.skipFileNames.contains(fileName) { continue }
             if Self.skipExtensions.contains(ext)     { continue }
+            if Self.skipSuffixes.contains(where: { fileName.hasSuffix($0) }) { continue }
+            if Self.skipPathComponents.contains(where: { file.filePath.contains($0) }) { continue }
 
             guard let content = try? String(contentsOfFile: file.filePath, encoding: .utf8) else { continue }
             let mod = file.moduleName.isEmpty
@@ -112,8 +128,15 @@ struct TrafficScanner {
             }
         }
 
-        result.inbound.sort  { $0.uri  < $1.uri }
-        result.outbound.sort { $0.proto < $1.proto || ($0.proto == $1.proto && $0.uri < $1.uri) }
+        // Protocol sort order: TCP first (transport-layer primitives), then alphabetical
+        func protoRank(_ p: String) -> Int { p == "TCP" ? 0 : 1 }
+        result.inbound.sort  { $0.uri < $1.uri }
+        result.outbound.sort {
+            let ra = protoRank($0.proto), rb = protoRank($1.proto)
+            if ra != rb { return ra < rb }
+            if $0.proto != $1.proto { return $0.proto < $1.proto }
+            return $0.uri < $1.uri
+        }
         return result
     }
 

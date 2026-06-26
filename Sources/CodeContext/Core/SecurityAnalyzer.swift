@@ -946,6 +946,38 @@ private extension SecurityAnalyzer {
                 category: .lowLevelBinary,
                 detect: checkObjCRuntimeHazards
             ),
+
+            // ── From archscope universal rules ─────────────────────────────
+            APCheck(
+                name: "Service-Specific Secret Prefixes (AWS / GitHub / Stripe / Slack / Google)",
+                description: "Well-known service credential formats — AWS access keys (`AKIA…`/`ASIA…`), GitHub PATs (`ghp_`/`gho_`/`ghs_`/`github_pat_`), Stripe keys (`sk_live_`/`sk_test_`), Slack tokens (`xoxb-`/`xoxp-`), and Google API keys (`AIza…`) — are definitive indicators of a live credential committed to source. The prefix format alone is authoritative; no variable-name context is needed. Rotate immediately and load from a secret manager or CI/CD environment.",
+                priority: .high,
+                category: .insecureDataStorage,
+                detect: checkServiceSecretPrefixes
+            ),
+            APCheck(
+                name: "Private Key Committed to Source",
+                description: "A PEM-encoded private key (`-----BEGIN … PRIVATE KEY-----`) embedded in the repository is committed to version history permanently. Private keys must never be committed: rotate the key immediately and load it at runtime from a secret store or mounted secret volume.",
+                priority: .high,
+                category: .cryptography,
+                detect: checkPrivateKeyInSource
+            ),
+            APCheck(
+                name: "Catastrophic ReDoS Regex Pattern",
+                description: "A regular expression passed to `NSRegularExpression` / `Regex` contains nested quantifiers (e.g. `(a+)+`, `(\\w+\\d+)+`) that cause catastrophic backtracking. An attacker who controls input matched against this pattern can force exponential backtracking and hang the process. Rewrite using possessive quantifiers or an RE2-safe equivalent.",
+                priority: .medium,
+                category: .crashFactors,
+                detect: checkReDOS
+            ),
+            APCheck(
+                name: "Credentials in Committed .env File",
+                description: "A `.env` file committed to the repository contains a credential assignment (`PASSWORD=`, `SECRET=`, `API_KEY=`, etc.). Committing `.env` files exposes secrets to anyone with repository access. Add `.env` to `.gitignore` and load secrets from a secret manager or CI/CD environment variables.",
+                priority: .high,
+                category: .insecureDataStorage,
+                detect: { _, _ in [] },
+                projectDetect: checkDotEnvCredentials,
+                isProjectOnly: true
+            ),
         ]
     }
 }
@@ -1242,21 +1274,43 @@ private extension SecurityAnalyzer {
 
     // MARK: I/O Validation — SQL Injection
 
+    // Interpolated integer-ID table names: `t\(table.id)` or `table\(idx)` cannot
+    // be parameterized in SQLite but carry no injection risk when the value is a
+    // system-controlled integer — skip them when values are otherwise bound via `?`.
+    private static let intIDTablePattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"\\\([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*\)"#
+    )
     static func checkSQLInjection(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        // Command-only keywords: WHERE/FROM alone are too common in log messages and
-        // error strings — require a DML/DDL verb so only real query strings are flagged
         let sqlCommandKeywords = ["SELECT ", "INSERT INTO", "UPDATE ", "DELETE FROM",
                                   "DROP TABLE", "CREATE TABLE", "ALTER TABLE"]
+        // Safe integer-typed property suffixes that can't carry user input
+        let safeIntSuffixes = [".id", ".rawValue", ".count", ".row", ".section",
+                               ".index", ".tag", ".offset", ".version", ".type"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             guard line.contains("\\(") else { continue }
             let upper = line.uppercased()
-            if sqlCommandKeywords.contains(where: { upper.contains($0) }) {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
+            guard sqlCommandKeywords.contains(where: { upper.contains($0) }) else { continue }
+            // If the line uses `?` for parameterized values, check if ALL interpolations
+            // are integer-typed property accesses (safe table name suffixes)
+            if line.contains("?") {
+                let allInterpsAreSafe: Bool = {
+                    guard let pat = intIDTablePattern else { return false }
+                    let range = NSRange(line.startIndex..., in: line)
+                    let matches = pat.matches(in: line, range: range)
+                    guard !matches.isEmpty else { return false }
+                    return matches.allSatisfy { m in
+                        guard let r = Range(m.range, in: line) else { return false }
+                        let expr = String(line[r]) // e.g. "\(table.id)"
+                        return safeIntSuffixes.contains(where: { expr.lowercased().hasSuffix($0 + ")") })
+                    }
+                }()
+                if allInterpsAreSafe { continue }
             }
+            out.append(viol(filePath, i, lines))
+            if out.count >= maxViolations { break }
         }
         return out
     }
@@ -1288,15 +1342,22 @@ private extension SecurityAnalyzer {
 
     // MARK: Insecure Data Storage
 
+    // Matches actual logging call sites — avoids substring false positives from
+    // method names like fingerprint(...) or blueprint(...) that contain "print(".
+    private static let loggingCallPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_])(print|debugPrint|NSLog|os_log|Logger\.\w+)\s*\("#
+    )
     static func checkSensitivePrint(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
+        guard let re = loggingCallPattern else { return [] }
         let keywords = ["password", "passwd", "token", "secret", "apikey", "api_key",
-                        "credential", "auth", "private_key", "privatekey"]
+                        "credential", "private_key", "privatekey"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let lower = line.lowercased()
-            guard lower.contains("print(") || lower.contains("debugprint(") || lower.contains("nslog(") else { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            guard re.firstMatch(in: line, range: range) != nil else { continue }
             if keywords.contains(where: { lower.contains($0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
@@ -1370,7 +1431,9 @@ private extension SecurityAnalyzer {
     }
 
     static func checkFloatingDependency(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        guard filePath.hasSuffix("Package.swift") else { return [] }
+        // Must be exactly `Package.swift`, not `SwiftPackage.swift` or other tooling files
+        guard filePath.hasSuffix("/Package.swift") ||
+              filePath == "Package.swift" else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
@@ -1419,6 +1482,10 @@ private extension SecurityAnalyzer {
     // MARK: Cryptography
 
     static func checkWeakHash(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        // Project-file ID generators (PBXProj, XcodeGen) legitimately use MD5/SHA-1
+        // for deterministic identifier generation — no cryptographic strength required.
+        if isToolingPath(filePath) { return [] }
+        if filePath.lowercased().contains("pbxproj") || filePath.lowercased().contains("identifier") { return [] }
         let patterns = ["CC_MD5(", "CC_MD5_Init", "CC_SHA1(", "CC_SHA1_Init",
                         "Insecure.MD5", "Insecure.SHA1", "HashAlgorithm.md5", ".md5.rawValue"]
         var out: [APViolation] = []
@@ -1465,15 +1532,28 @@ private extension SecurityAnalyzer {
 
     // MARK: Network Security
 
+    // "http://" is a genuine URL literal only when followed by a domain-like string,
+    // not when used as a bare prefix string or inside HTML template concatenation.
+    private static let httpURLLiteralPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #""http://[A-Za-z0-9]([A-Za-z0-9\-\.]*[A-Za-z0-9])?(:[0-9]+)?(/[^"]*)?""#
+    )
     static func checkHTTPURL(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
+        guard let urlPat = httpURLLiteralPattern else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let stripped = stripLineComment(line)
             guard stripped.contains("\"http://") else { continue }
+            // Skip string-manipulation patterns: "http://" + var, prefix checks, etc.
+            if stripped.contains("\"http://\"") { continue } // bare prefix literal
             let lower = stripped.lowercased()
             if lower.contains("localhost") || lower.contains("127.0.0.1") || lower.contains("10.0.") { continue }
+            // Skip local HTML rendering contexts
+            if lower.contains("<html") || lower.contains("</html") ||
+               lower.contains("wkwebview") || lower.contains("loadhtmlstring") { continue }
+            let range = NSRange(stripped.startIndex..., in: stripped)
+            guard urlPat.firstMatch(in: stripped, range: range) != nil else { continue }
             out.append(viol(filePath, i, lines))
             if out.count >= maxViolations { break }
         }
@@ -1550,9 +1630,20 @@ private extension SecurityAnalyzer {
 
     // MARK: Input/Output Validation
 
+    // Build tools, code-generation scripts, and project-spec helpers intentionally
+    // use `..`, shell processes, and path operations — not production app code.
+    private static func isToolingPath(_ filePath: String) -> Bool {
+        let lower = filePath.lowercased()
+        let toolingComponents = ["/tools/", "/scripts/", "/xcodegenkit", "/xcodegen",
+                                 "/pbxproj/", "swiftc_stub", "/sourceryworker",
+                                 "/tuist/", "/fastlane/", "/ci/", "/bin/"]
+        return toolingComponents.contains(where: { lower.contains($0) })
+    }
+
     static func checkPathTraversal(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        if filePath.hasSuffix("Package.swift") { return [] }
+        if filePath.hasSuffix("/Package.swift") { return [] }
         if filePath.lowercased().contains("test") { return [] }
+        if isToolingPath(filePath) { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
@@ -1566,6 +1657,8 @@ private extension SecurityAnalyzer {
     }
 
     static func checkShellInjection(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if isToolingPath(filePath) { return [] }
+        if filePath.lowercased().contains("test") { return [] }
         let patterns = ["/bin/sh", "/bin/bash", "/usr/bin/env",
                         "Process()", "NSTask()", "popen("]
         var out: [APViolation] = []
@@ -1584,12 +1677,19 @@ private extension SecurityAnalyzer {
 
     static func checkDebugToolsInProduction(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        let debugFrameworks = ["FLEX", "Reveal", "Chisel", "InjectionIII",
-                               "Dotzu", "DBDebugToolkit", "GodEye", "Hyperion"]
+        let debugFrameworks: Set<String> = ["FLEX", "Reveal", "Chisel", "InjectionIII",
+                                             "Dotzu", "DBDebugToolkit", "GodEye", "Hyperion",
+                                             "FLEXLoader", "RevealServer"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             guard line.contains("import ") else { continue }
-            if debugFrameworks.contains(where: { line.contains($0) }) {
+            // Extract the imported module name exactly — avoids substring collisions like
+            // "StreamingTextReveal" matching "Reveal" or "Chisel" matching "NSChiselBuilder".
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("import ") else { continue }
+            let moduleName = String(trimmed.dropFirst("import ".count))
+                .components(separatedBy: .whitespaces).first ?? ""
+            if debugFrameworks.contains(moduleName) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -1658,17 +1758,29 @@ private extension SecurityAnalyzer {
 
     // MARK: Privacy
 
+    // Pasteboard WRITES are user-intended (Copy button etc.) — flag only READS that
+    // could silently harvest clipboard content. We look for reading patterns (.string,
+    // .strings, .data) while skipping lines that assign TO the pasteboard, and lines
+    // inside explicit user-action context (button/gesture handler names in surrounding 5 lines).
     static func checkClipboardAccess(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
+        let writePatterns = [".setValue(", ".setObjects(", ".setItems(", ".string =", ".strings ="]
+        let userActionNames = ["copy(", "paste(", "cut(", "copytapped", "copybuttontapped",
+                               "oncopytap", "copyaction", "handlecopy", "copylink", "copytext"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            if (code.contains("UIPasteboard.general") || code.contains("NSPasteboard.general")) &&
-               (code.contains(".string") || code.contains(".strings") || code.contains(".data(")) {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
-            }
+            guard (code.contains("UIPasteboard.general") || code.contains("NSPasteboard.general")) else { continue }
+            guard code.contains(".string") || code.contains(".strings") || code.contains(".data(") else { continue }
+            // Skip write operations
+            if writePatterns.contains(where: { code.contains($0) }) { continue }
+            // Skip if inside an obvious user-action handler (look at surrounding func decls)
+            let window = lines[max(0, i - 5) ..< min(lines.count, i + 1)]
+            let windowLower = window.joined().lowercased()
+            if userActionNames.contains(where: { windowLower.contains($0) }) { continue }
+            out.append(viol(filePath, i, lines))
+            if out.count >= maxViolations { break }
         }
         return out
     }
@@ -1695,9 +1807,15 @@ private extension SecurityAnalyzer {
     static func checkFileSharingEnabled(_ repoPath: String) -> [APViolation] {
         var out: [APViolation] = []
         guard let enumerator = FileManager.default.enumerator(atPath: repoPath) else { return out }
+        // Third-party SDK demo bundles and vendored libraries are not part of the app target
+        let vendorPathComponents = ["/openh264", "/webrtc", "/examples/", "/example/",
+                                    "/demo/", "/demos/", "/vendor/", "/Pods/",
+                                    "/node_modules/", "/.build/"]
         for case let rel as String in enumerator {
             guard rel.hasSuffix(".plist") else { continue }
-            if rel.lowercased().contains("test") { continue }
+            let lower = rel.lowercased()
+            if lower.contains("test") { continue }
+            if vendorPathComponents.contains(where: { lower.contains($0.lowercased()) }) { continue }
             let full = "\(repoPath)/\(rel)"
             guard let content = try? String(contentsOfFile: full, encoding: .utf8) else { continue }
             let lines = content.components(separatedBy: "\n")
@@ -1956,13 +2074,16 @@ private extension SecurityAnalyzer {
 
     static func checkSensitiveURLCaching(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
+        // Lines that remove / clear data are security fixes, not violations
+        let removalSignals = ["removeData(", "removeAllCachedResponses(", "removeAll(",
+                              "fetchDataRecords(", ".nonPersistent("]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
+            if removalSignals.contains(where: { code.contains($0) }) { continue }
             // URLCache with non-zero disk capacity
             if code.contains("URLCache(") && line.contains("diskCapacity:") {
-                // Normalize whitespace so "diskCapacity:0" and "diskCapacity: 0" both match
                 let normalized = line.components(separatedBy: .whitespaces)
                     .filter { !$0.isEmpty }.joined(separator: " ").lowercased()
                 if !normalized.contains("diskcapacity: 0") {
@@ -1971,7 +2092,7 @@ private extension SecurityAnalyzer {
                     continue
                 }
             }
-            // WKWebsiteDataStore.default() persists cookies/auth tokens
+            // WKWebsiteDataStore.default() used to store (not remove) data
             if code.contains("WKWebsiteDataStore.default()") {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
@@ -1989,41 +2110,81 @@ private extension SecurityAnalyzer {
 
     // MARK: Cryptography
 
+    // Matches specific credential-naming patterns with word boundaries.
+    // Deliberately omits bare "key" to avoid UI/animation/dict key false positives.
+    private static let keywordAssignmentPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"(?i)\b(password|passwd|secret|api[_-]?key|auth[_-]?key|access[_-]?token|private[_-]?key|client[_-]?secret|app[_-]?secret|encryption[_-]?key|symmetric[_-]?key)\b\s*[=:]\s*["']([^"']{8,})["']"#
+    )
+    // Raw hex key material or JWT literal assigned directly
+    private static let hexBlobPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"[:=]\s*["']([0-9a-fA-F]{32,})["']"#
+    )
+    private static let jwtLiteralPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"["'](eyJ[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,})["']"#
+    )
+    // JSON wire-key mapping: snake_case values are field name aliases, not secrets
+    private static let jsonKeyValue: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"^[a-z][a-z0-9]*(_[a-z0-9]+)+$"#
+    )
+    // Values that are placeholder / non-secret by convention
+    private static let secretPlaceholders = ["example", "test", "dummy", "fake", "sample",
+                                              "placeholder", "your_", "xxx", "todo", "changeme",
+                                              "insert", "enter", "redacted", "null", "none"]
     static func checkHardcodedEncryptionKey(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if filePath.lowercased().contains("test") { return [] }
-        // let/var with any key-concept name assigned a string literal ≥ 8 chars
-        guard let keyVarPattern = try? NSRegularExpression(
-            pattern: #"(?i)(?:let|var)\s+\w*(?:key|secret|cipher|encrypt|credential|crypto|symmetric)\w*\s*[=:]"#
-        ) else { return [] }
-        guard let literalPattern = try? NSRegularExpression(
-            pattern: #""[^"]{8,}""#
-        ) else { return [] }
+        guard let kwPat = keywordAssignmentPattern,
+              let hexPat = hexBlobPattern,
+              let jwtPat = jwtLiteralPattern,
+              let jsonPat = jsonKeyValue else { return [] }
+        // SymmetricKey/SecKey literal pattern — requires a string literal on the same line
+        guard let literalPat = try? NSRegularExpression(pattern: #""[^"]{8,}""#) else { return [] }
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
+            // `case Name = "value"` lines in Swift enums map identifiers to JSON wire keys
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("case ") { continue }
             let lineRange = NSRange(line.startIndex..., in: line)
-            // 1. Key-named variable assigned a string literal
-            if keyVarPattern.firstMatch(in: line, range: lineRange) != nil &&
-               literalPattern.firstMatch(in: line, range: lineRange) != nil {
+            // 1. keyword = "literal" with word-boundary guards
+            if let m = kwPat.firstMatch(in: line, range: lineRange),
+               let valRange = Range(m.range(at: 2), in: line) {
+                let val = String(line[valRange])
+                let low = val.lowercased()
+                let isJSONKey = jsonPat.firstMatch(in: low, range: NSRange(low.startIndex..., in: low)) != nil && val.count <= 40
+                if !isJSONKey && !secretPlaceholders.contains(where: { low.contains($0) }) {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { break }
+                    continue
+                }
+            }
+            // 2. Raw 32+ hex-char blob (digest / key material)
+            if hexPat.firstMatch(in: line, range: lineRange) != nil &&
+               !secretPlaceholders.contains(where: { line.lowercased().contains($0) }) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // 3. JWT literal embedded in source
+            if jwtPat.firstMatch(in: line, range: lineRange) != nil {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
                 continue
             }
             let code = stripStrings(line)
-            // 2. SymmetricKey(data:) or SecKeyCreateWithData fed a literal — most common CryptoKit pattern
+            // 4. SymmetricKey(data:) or SecKeyCreateWithData fed a string literal
             if (code.contains("SymmetricKey(data:") || code.contains("SecKeyCreateWithData")) &&
-               literalPattern.firstMatch(in: line, range: lineRange) != nil {
+               literalPat.firstMatch(in: line, range: lineRange) != nil {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
                 continue
             }
-            // 3. [UInt8] array assigned to a key-named variable
-            //    \bkey catches keyBytes/keyData but not monkey (no word boundary before k in "monkey")
-            if code.contains("[UInt8]") && code.contains("= [") &&
-               (code.contains("Key") || code.contains("Secret") || code.contains("Cipher") ||
-                code.range(of: #"\bkey"#, options: .regularExpression) != nil) {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
+            // 5. [UInt8] array assigned to a clearly crypto-named variable (exact word boundaries)
+            if code.contains("[UInt8]") && code.contains("= [") {
+                let hasCryptoName = code.range(of: #"\b(encryptionKey|symmetricKey|privateKey|secretKey|cipherKey|aesKey)\b"#,
+                                               options: .regularExpression) != nil
+                if hasCryptoName {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { break }
+                }
             }
         }
         return out
@@ -2199,6 +2360,115 @@ private extension SecurityAnalyzer {
                         snippet: "\(perm.key) declared but no \(perm.label) API usage found"))
                     break
                 }
+                if out.count >= maxViolations { return out }
+            }
+        }
+        return out
+    }
+
+    // MARK: Universal — Service-specific secret prefixes (AWS / GitHub / Stripe / Slack / Google)
+
+    private static let servicePrefixPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"["'](AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{59}|sk_live_[0-9a-zA-Z]{24,}|sk_test_[0-9a-zA-Z]{24,}|xoxb-[0-9]{11}-[0-9A-Za-z\-]{24,}|xoxp-[0-9]+-[0-9]+-[0-9A-Za-z\-]+|AIza[0-9A-Za-z\-_]{35})["']"#
+    )
+
+    static func checkServiceSecretPrefixes(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        guard let pattern = servicePrefixPattern else { return [] }
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            if pattern.firstMatch(in: line, range: range) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Universal — PEM private key committed to source
+
+    static func checkPrivateKeyInSource(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if line.contains("-----BEGIN") && line.contains("PRIVATE KEY-----") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Universal — Catastrophic ReDoS regex patterns
+
+    // Matches regex constructor calls in Swift source
+    private static let reCompilePattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"NSRegularExpression\s*\(|Regex\s*\(|\.regularExpression\b"#
+    )
+    // Nested quantifier danger: (X+)+, (X*)+ or alternation inside a repeated group: (X|Y+)+
+    private static let reDoSPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"\([^()\n]{1,60}[+*][^()\n]{0,20}\)[+*]|\([^()\n]{0,30}\|[^()\n]{0,30}[+*][^()\n]{0,10}\)[+*]"#
+    )
+
+    static func checkReDOS(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        guard let compilePat = reCompilePattern, let dosPat = reDoSPattern else { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let stripped = stripStrings(line)
+            let range = NSRange(stripped.startIndex..., in: stripped)
+            guard compilePat.firstMatch(in: stripped, range: range) != nil else { continue }
+            let origRange = NSRange(line.startIndex..., in: line)
+            if dosPat.firstMatch(in: line, range: origRange) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Universal — Credentials in committed .env files
+
+    private static let dotEnvNames: Set<String> = [
+        ".env", ".env.local", ".env.production", ".env.staging", ".env.development"
+    ]
+    private static let dotEnvCredential: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"(?i)^[ \t]*(PASSWORD|PASSWD|SECRET|API_KEY|APIKEY|TOKEN|PRIVATE_KEY|DB_PASS(?:WORD)?|ACCESS_KEY|AUTH_TOKEN|CLIENT_SECRET|APP_SECRET|ENCRYPTION_KEY|HMAC_KEY|JWT_SECRET|SIGNING_KEY|MASTER_KEY|PSK)\s*=\s*(.+)"#
+    )
+    private static let dotEnvSkipValues = [
+        "${", "$(", "%{", "changeme", "your_", "xxx", "placeholder",
+        "example", "test", "dummy", "todo", "insert", "redacted", "null", "none",
+    ]
+
+    static func checkDotEnvCredentials(_ repoPath: String) -> [APViolation] {
+        guard let cred = dotEnvCredential else { return [] }
+        let skipDirs: Set<String> = [".git", "node_modules", "vendor", ".build", "DerivedData"]
+        var out: [APViolation] = []
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: repoPath),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        for case let url as URL in enumerator {
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                if skipDirs.contains(url.lastPathComponent) { enumerator.skipDescendants() }
+                continue
+            }
+            guard dotEnvNames.contains(url.lastPathComponent) else { continue }
+            let rel = url.path.hasPrefix(repoPath + "/")
+                ? String(url.path.dropFirst(repoPath.count + 1))
+                : url.path
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let lines = content.components(separatedBy: "\n")
+            for (i, line) in lines.enumerated() {
+                let range = NSRange(line.startIndex..., in: line)
+                guard let match = cred.firstMatch(in: line, range: range),
+                      let valRange = Range(match.range(at: 2), in: line) else { continue }
+                let val = String(line[valRange]).trimmingCharacters(in: .whitespaces)
+                if val.isEmpty || dotEnvSkipValues.contains(where: { val.lowercased().contains($0) }) { continue }
+                out.append(APViolation(file: rel, fullPath: url.path, line: i + 1, snippet: snippet(line)))
                 if out.count >= maxViolations { return out }
             }
         }

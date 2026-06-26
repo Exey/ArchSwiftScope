@@ -57,7 +57,7 @@ swift build -c release
 
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_oop.svg)
 
-4.🚨 **Security Risks** - (55 active checks · index 0–1000)
+4.🚨 **Security Risks** - (60 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
    
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_sec.svg)

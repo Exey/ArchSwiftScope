@@ -1128,8 +1128,10 @@ struct ReportGenerator {
 
         packageSections = pkgSectionArr.joined()
         packageGraphScripts = pkgScriptArr.joined()
+        } // end if !skipModules
 
-        // Arch-level graph script (appended after per-package scripts)
+        // Arch-level graph script — always emitted regardless of --skip-modules,
+        // because the architecture graph is a cross-module view, not a per-module detail.
         if showArchGraph {
             packageGraphScripts += """
             {
@@ -1167,7 +1169,6 @@ struct ReportGenerator {
 
             """
         }
-        } // end if !skipModules
 
         // ─── 4. Hotspots ───
         // In-degree = number of other files that import / reference this file
@@ -1231,6 +1232,236 @@ struct ReportGenerator {
 
         print("\(ts())  Writing HTML...")
 
+        // ─── Markdown Report (embedded in HTML for MD toggle) ───
+        let mdContent: String = {
+            var md = ""
+            let df = DateFormatter()
+            df.dateFormat = "yyyy-MM-dd HH:mm"
+            md += "# 🔬 ArchSwiftScope — \(projectName.isEmpty ? "Project" : projectName)\n\n"
+            md += "> Generated \(df.string(from: Date())) · branch `\(branchName)`\n\n"
+
+            // Summary
+            md += "## 📊 Summary\n\n"
+            md += "| Metric | Value |\n|--------|-------|\n"
+            if !metadata.swiftVersion.isEmpty { md += "| Swift | \(metadata.swiftVersion) |\n" }
+            if !metadata.appVersion.isEmpty   { md += "| App Version | \(metadata.appVersion) |\n" }
+            if !metadata.deploymentTargets.isEmpty { md += "| Deployment | \(metadata.deploymentTargets.joined(separator: ", ")) |\n" }
+            md += "| Swift Files | \(projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count) |\n"
+            md += "| Total Files | \(projectFiles.count) |\n"
+            md += "| Lines of Code | \(totalLines.formatted()) |\n"
+            md += "| Declarations | \(totalDecls) |\n"
+            md += "| Extensions | \(totalExts) |\n"
+            md += "| Packages | \(packages.count) |\n"
+            md += "| Structs | \(totalStructs) |\n"
+            md += "| Classes | \(totalClasses) |\n"
+            md += "| Enums | \(totalEnums) |\n"
+            md += "| Protocols | \(totalProtocols) |\n"
+            md += "| Actors | \(totalActors) |\n"
+            md += "\n"
+
+            // Architecture
+            md += "## 🏛️ Architecture\n\n"
+            if let top = archDetection.top, top.confidence >= 0.15 {
+                md += "**Pattern:** \(top.name) (\(Int(top.confidence * 100))%)\n\n"
+                if !top.letters.isEmpty {
+                    md += "| Letter | Role | Files |\n|--------|------|-------|\n"
+                    for l in top.letters {
+                        md += "| **\(l.letter)** | \(l.fullName) | \(l.fileCount) |\n"
+                    }
+                    md += "\n"
+                }
+            }
+            let layersSorted = layerOrder.compactMap { name -> (String, Int, Int)? in
+                guard let e = layerCounts[name] else { return nil }
+                return (name, e.files, e.lines)
+            } + layerCounts.keys.filter { !layerOrder.contains($0) }.sorted().compactMap { name -> (String, Int, Int)? in
+                guard let e = layerCounts[name] else { return nil }
+                return (name, e.files, e.lines)
+            }
+            if !layersSorted.isEmpty {
+                md += "### 📐 Layers\n\n| Layer | Files | LOC |\n|-------|-------|-----|\n"
+                for (name, files, lines) in layersSorted {
+                    md += "| \(layerEmoji[name] ?? "•") \(name) | \(files) | \(lines.formatted()) |\n"
+                }
+                md += "\n"
+            }
+            if !detectedComponents.isEmpty {
+                md += "### 🧩 Components (\(detectedComponents.count))\n\n"
+                md += detectedComponents.map { "\($0.icon) **\($0.name)** — \($0.detail)" }.joined(separator: "\n") + "\n\n"
+            }
+            if let appleNames = classifiedImports[.apple], !appleNames.isEmpty {
+                md += "### 🍎 Apple Frameworks (\(appleNames.count))\n\n"
+                md += appleNames.sorted().map { "`\($0)`" }.joined(separator: " · ") + "\n\n"
+            }
+            if let extNames = classifiedImports[.external], !extNames.isEmpty {
+                let cleaned = Set(extNames.map { $0.components(separatedBy: ":").first ?? $0 }).sorted()
+                md += "### 📦 External Libraries (\(cleaned.count))\n\n"
+                md += cleaned.map { "`\($0)`" }.joined(separator: " · ") + "\n\n"
+            }
+            if !monkeyPatchedLibs.isEmpty {
+                md += "### 🐒 Vendored C/C++ (\(monkeyPatchedLibs.count))\n\n"
+                md += monkeyPatchedLibs.map { "`\($0.name)` (\($0.fileCount) files)" }.joined(separator: " · ") + "\n\n"
+            }
+            let allLocalPkgNames = Set(projectFiles.compactMap { $0.packageName.isEmpty ? nil : $0.packageName })
+            if !allLocalPkgNames.isEmpty {
+                md += "### 🏠 Local Packages (\(allLocalPkgNames.count))\n\n"
+                md += allLocalPkgNames.sorted().map { "`\($0)`" }.joined(separator: " · ") + "\n\n"
+            }
+
+            // Traffic
+            if trafficResult.hasData {
+                md += "## 🛜 Traffic\n\n"
+                if !trafficResult.outbound.isEmpty {
+                    md += "### 📤 Outbound (\(trafficResult.outbound.count))\n\n"
+                    md += "| Protocol | URI | Format | File |\n|----------|-----|--------|------|\n"
+                    for e in trafficResult.outbound.prefix(50) {
+                        let fname = URL(fileURLWithPath: e.filePath).lastPathComponent
+                        let fmt = e.dataFmt.isEmpty ? "—" : e.dataFmt
+                        let uri = e.uri.count > 60 ? String(e.uri.prefix(57)) + "…" : e.uri
+                        md += "| \(e.proto) | \(uri) | \(fmt) | \(fname):\(e.line) |\n"
+                    }
+                    md += "\n"
+                }
+                if !trafficResult.inbound.isEmpty {
+                    md += "### 📥 Inbound (\(trafficResult.inbound.count))\n\n"
+                    md += "| Protocol | Route | Format | File |\n|----------|-------|--------|------|\n"
+                    for e in trafficResult.inbound.prefix(30) {
+                        let fname = URL(fileURLWithPath: e.filePath).lastPathComponent
+                        let fmt = e.dataFmt.isEmpty ? "—" : e.dataFmt
+                        md += "| \(e.proto) | \(e.uri) | \(fmt) | \(fname):\(e.line) |\n"
+                    }
+                    md += "\n"
+                }
+            }
+
+            // OOP vs POP
+            md += "## 🧬 OOP vs POP\n\n"
+            let ps = resolvedOOPStats
+            let popLabel = ps.popScore >= 60 ? "POP" : ps.popScore < 40 ? "OOP" : "Mixed"
+            md += "**POP Score:** \(ps.popScore)% — **\(popLabel)**\n\n"
+            md += "| Category | Weight | Score |\n|----------|--------|-------|\n"
+            md += "| Protocol Design | 55% | \(ps.protoDesignScore)% |\n"
+            md += "| Value Semantics | 30% | \(ps.valueSemanticsScore)% |\n"
+            md += "| Anti-inheritance | 15% | \(ps.antiInheritScore)% |\n"
+            md += "\n"
+            md += "| Metric | Count |\n|--------|-------|\n"
+            md += "| Classes | \(ps.totalClasses) |\n"
+            md += "| Structs | \(ps.totalStructs) |\n"
+            md += "| Protocols | \(ps.totalProtocols) |\n"
+            md += "| Final Classes | \(ps.finalClasses) |\n"
+            md += "| Singletons | \(ps.singletonCount) |\n"
+            md += "| Generic Functions | \(ps.genericFuncCount) |\n"
+            md += "| Protocol Extensions w/ Code | \(ps.protocolExtWithCode) |\n"
+            md += "| Multi-conformer Protocols | \(ps.multiConformerProtocols) |\n"
+            md += "\n"
+
+            // Security
+            md += "## 🚨 Security — Index \(resolvedSecurityScore.total) / 1000\n\n"
+            let band = resolvedSecurityScore.total < 200 ? "Hardened" : resolvedSecurityScore.total < 500 ? "Minor exposure" : resolvedSecurityScore.total < 800 ? "Elevated risk" : "Critical exposure"
+            md += "**Risk Band:** \(band)\n\n"
+            let failedChecks = resolvedAPResults.filter { !$0.passed }
+            md += "**Checks Failed:** \(failedChecks.count) / \(resolvedAPResults.count)\n\n"
+            if !failedChecks.isEmpty {
+                md += "| Check | Violations |\n|-------|------------|\n"
+                for r in failedChecks.prefix(20) {
+                    md += "| \(r.check.name) | \(r.totalCount) |\n"
+                }
+                md += "\n"
+            }
+
+            // Git
+            md += "## 🐙 Git Analysis\n\n"
+            if !topTeam.isEmpty {
+                md += "### 👥 Team (\(topTeam.count))\n\n"
+                md += "| Developer | Files | Commits | LOC Added |\n|-----------|-------|---------|----------|\n"
+                for entry in topTeam {
+                    let name = entry.value.displayName.isEmpty ? entry.key : entry.value.displayName
+                    let loc = entry.value.totalLOCAdded > 0 ? entry.value.totalLOCAdded.formatted() : "—"
+                    md += "| \(name) | \(entry.value.filesModified) | \(entry.value.totalCommits) | \(loc) |\n"
+                }
+                md += "\n"
+            }
+            if branchStats.total > 0 {
+                md += "### 🌿 Branches\n\n"
+                md += "| Metric | Value |\n|--------|-------|\n"
+                md += "| Total | \(branchStats.total) |\n"
+                if branchStats.local  > 0 { md += "| Local | \(branchStats.local) |\n" }
+                if branchStats.remote > 0 { md += "| Remote | \(branchStats.remote) |\n" }
+                if branchStats.stale  > 0 { md += "| Stale (>90d) | \(branchStats.stale) |\n" }
+                if branchStats.merged > 0 { md += "| Merged | \(branchStats.merged) |\n" }
+                let bm = branchStats.branchingModel
+                if bm.model != .unknown { md += "| Branching Model | \(bm.model.rawValue) (\(Int(bm.confidence * 100))%) |\n" }
+                md += "\n"
+            }
+            if !churnFiles.isEmpty {
+                md += "### 🔥 Code Churn (top \(min(churnFiles.count, 15)))\n\n"
+                md += "| File | Changes |\n|------|--------|\n"
+                for stat in churnFiles.prefix(15) {
+                    md += "| \(URL(fileURLWithPath: stat.path).lastPathComponent) | \(stat.changeCount) |\n"
+                }
+                md += "\n"
+            }
+            if semanticStats.totalCommits > 0 {
+                md += "### 📐 Semantic Standards\n\n"
+                md += "| Metric | Value |\n|--------|-------|\n"
+                md += "| Total Commits | \(semanticStats.totalCommits) |\n"
+                let convRate = Int(Double(semanticStats.conventionalCommits) / Double(semanticStats.totalCommits) * 100)
+                md += "| Conventional Commits | \(semanticStats.conventionalCommits) (\(convRate)%) |\n"
+                md += "| Semver Tags | \(semanticStats.semverTags) / \(semanticStats.totalTags) |\n"
+                if !semanticStats.latestSemver.isEmpty { md += "| Latest Tag | \(semanticStats.latestSemver) |\n" }
+                if !semanticStats.topPrefixes.isEmpty {
+                    md += "\n**Commit Prefixes:**\n\n| Prefix | Count |\n|--------|-------|\n"
+                    for p in semanticStats.topPrefixes.prefix(10) { md += "| `\(p.prefix)` | \(p.count) |\n" }
+                }
+                md += "\n"
+            }
+
+            // Hot Zones
+            if !hotspots.isEmpty {
+                md += "## 🔥 Hot Zones\n\n"
+                md += "| File | Used By | Lines | Package |\n|------|---------|-------|--------|\n"
+                for item in hotspots {
+                    let file = fileMap[item.path]
+                    let fname = URL(fileURLWithPath: item.path).lastPathComponent
+                    let pkg = file?.packageName.isEmpty == false ? file!.packageName : "App"
+                    md += "| \(fname) | \(inDegree[item.path] ?? 0) | \(file?.lineCount ?? 0) | \(pkg) |\n"
+                }
+                md += "\n"
+            }
+
+            // Longest Functions
+            if !topLongestFuncs.isEmpty {
+                md += "## 📏 Longest Functions\n\n"
+                md += "| Function | Lines | File |\n|----------|-------|------|\n"
+                for fn in topLongestFuncs {
+                    md += "| `\(fn.name)` | \(fn.lineCount) | \(URL(fileURLWithPath: fn.filePath).lastPathComponent):\(fn.startLine) |\n"
+                }
+                md += "\n"
+            }
+
+            // Module Insights
+            if !topPenetration.isEmpty {
+                md += "## 📋 Module Insights\n\n"
+                md += "### 📊 Package Penetration\n\n"
+                md += "| Package | Used By |\n|---------|--------|\n"
+                for entry in topPenetration { md += "| \(entry.key) | \(entry.value.count) |\n" }
+                md += "\n"
+            }
+            if !topTodoModules.isEmpty {
+                if topPenetration.isEmpty { md += "## 📋 Module Insights\n\n" }
+                md += "### 📝 TODO / FIXME\n\n"
+                md += "| Module | TODOs | FIXMEs | Total |\n|--------|-------|--------|-------|\n"
+                for (key, todos) in topTodoModules {
+                    let fixmes = moduleFixmes[key] ?? 0
+                    md += "| \(key) | \(todos) | \(fixmes) | \(todos + fixmes) |\n"
+                }
+                md += "\n"
+            }
+
+            md += "---\n\n*Generated by [ArchSwiftScope](https://github.com/Exey/ArchSwiftScope)*\n"
+            return md
+        }()
+
         // ─── HTML ───
         let html = """
         <!DOCTYPE html>
@@ -1246,8 +1477,26 @@ struct ReportGenerator {
                 [data-theme="dark"] body { color-scheme: dark; }
                 [data-theme="dark"] .ap-fail-badge { background:#3a1c1c; }
                 [data-theme="dark"] .card { box-shadow:0 1px 12px rgba(0,0,0,0.35); }
-                .theme-btn { position:absolute;top:20px;right:24px;width:34px;height:34px;border-radius:50%;border:1px solid var(--border);background:var(--bg2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,0.10);transition:background .2s,border-color .2s;line-height:1; }
-                .theme-btn:hover { background:var(--border); }
+                [data-theme="dark"] .tag-apple   { background:#162018; color:#b8e47a; }
+                [data-theme="dark"] .tag-external { background:#241a06; color:#ffb870; }
+                [data-theme="dark"] .tag-local   { background:#191e3a; color:#9dbbff; }
+                [data-theme="dark"] .tag-pop     { background:#162018; color:#b8e47a; }
+                [data-theme="dark"] .tag-oop     { background:#241a06; color:#ffb870; }
+                [data-theme="dark"] .tag-mixed   { background:#1c1c28; color:#b4b2d0; }
+                [data-theme="dark"] .tag-private { background:#201018; color:#ff90a4; }
+                [data-theme="dark"] .branch-badge { background:#191e3a; color:#9dbbff; }
+                [data-theme="dark"] .pkg-link:hover { background:#1a2c3e; }
+                [data-theme="dark"] .bs-badge-right { background:rgba(255,255,255,0.07); }
+                [data-theme="dark"] .bs-badge { background:rgba(255,255,255,0.08); }
+                .top-actions { display:flex;align-items:center;justify-content:flex-end;gap:8px;user-select:none;margin-bottom:8px; }
+                .pill-seg { display:flex;border:1px solid var(--border);border-radius:999px;overflow:hidden;background:var(--bg); }
+                .seg-btn { border:none;background:transparent;color:var(--text3);padding:6px 13px;cursor:pointer;font-size:13px;line-height:1;transition:background .15s,color .15s;white-space:nowrap; }
+                .seg-btn:hover { color:var(--text); }
+                .seg-btn.active { background:var(--bg2);color:var(--text);font-weight:600; }
+                .md-toolbar { display:flex;justify-content:flex-end;margin-bottom:8px; }
+                .md-copy-btn { padding:5px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text2);font-size:12px;font-weight:600;cursor:pointer;transition:background .15s; }
+                .md-copy-btn:hover { background:var(--border); }
+                .md-pre { font-family:'SF Mono',Menlo,monospace;font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--text);background:var(--bg2);padding:20px;border-radius:10px;margin:0;overflow-x:auto;max-height:85vh;overflow-y:auto; }
                 * { box-sizing: border-box; }
                 body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif; margin: 0; padding: 20px; background: var(--bg); color: var(--text); line-height: 1.5; }
                 .container { max-width: 1280px; margin: 0 auto; }
@@ -1291,6 +1540,9 @@ struct ReportGenerator {
                 .count { font-weight: 400; color: var(--text3); }
                 .import-group { margin-bottom: 16px; }
                 .import-group h3 { margin-bottom: 8px; }
+                .traffic-multi { display:flex;flex-direction:column;gap:3px; }
+                .traffic-file-item { white-space:nowrap; }
+                .traffic-count { display:inline-block;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:11px;color:var(--text3);margin-left:5px;vertical-align:middle; }
                 .hotspot-list { list-style: none; padding: 0; margin: 0; }
                 .hotspot-item { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: flex-start; }
                 .hotspot-score { font-weight: 600; color: var(--red); font-family: 'SF Mono', monospace; font-size: 13px; white-space: nowrap; }
@@ -1457,8 +1709,18 @@ struct ReportGenerator {
         </head>
         <body>
         <div class="container">
-            <div class="card" style="position:relative">
-                <button class="theme-btn" id="theme-btn" title="Toggle dark/light theme">🌙</button>
+            <div class="top-actions">
+                <div class="pill-seg">
+                    <button class="seg-btn" id="theme-dark">🌙 Dark</button>
+                    <button class="seg-btn" id="theme-light">☀ Light</button>
+                </div>
+                <div class="pill-seg">
+                    <button class="seg-btn active" id="btn-html" onclick="switchView('html')">HTML</button>
+                    <button class="seg-btn" id="btn-md" onclick="switchView('md')">MD</button>
+                </div>
+            </div>
+            <div id="html-view">
+            <div class="card">
                 <h1>🔬 ArchSwiftScope 📋 \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
                 <p class="subtitle">Generated \(Date().formatted()) · <span class="branch-badge">\(esc(branchName))</span> branch</p>
                 <div class="summary-grid">
@@ -1498,10 +1760,10 @@ struct ReportGenerator {
             <div class="card">
                 \(architectureCardHTML)
             </div>
-            \(trafficResult.hasData ? "<div class=\"card\">\(buildTrafficHTML(trafficResult))</div>" : "")
             <div class="card">
                 \(oopCardHTML)
             </div>
+            \(trafficResult.hasData ? "<div class=\"card\">\(buildTrafficHTML(trafficResult))</div>" : "")
             <div class="card">
                 \(apCardHTML)
             </div>
@@ -1638,6 +1900,15 @@ struct ReportGenerator {
             <footer style="text-align:center; padding: 20px 0 10px; color: var(--text3); font-size: 12px;">
                 Generator: <a href="https://github.com/Exey/ArchSwiftScope" style="color: var(--accent); text-decoration: none;">ArchSwiftScope</a> · MIT License · Exey Panteleev
             </footer>
+            </div>
+            <div id="md-view" style="display:none">
+                <div class="card">
+                    <div class="md-toolbar">
+                        <button class="md-copy-btn" onclick="copyMD()">Copy Markdown</button>
+                    </div>
+                    <pre class="md-pre" id="md-content">\(esc(mdContent))</pre>
+                </div>
+            </div>
         </div>
         <script>
         window.SECURITY_DATA = \(securityScoreJSONLiteral);
@@ -1723,20 +1994,42 @@ struct ReportGenerator {
                 });
             }
         })();
-        (function(){
-            var html = document.documentElement;
-            var btn  = document.getElementById('theme-btn');
-            var saved = localStorage.getItem('archswift-theme') || 'light';
-            html.setAttribute('data-theme', saved);
-            if (btn) btn.textContent = saved === 'dark' ? '☀️' : '🌙';
-            btn && btn.addEventListener('click', function() {
-                var dark = html.getAttribute('data-theme') === 'dark';
-                var next = dark ? 'light' : 'dark';
-                html.setAttribute('data-theme', next);
-                btn.textContent = next === 'dark' ? '☀️' : '🌙';
-                localStorage.setItem('archswift-theme', next);
-                __graphs.forEach(function(g) { try { g.refresh(); } catch(e){} });
+        function switchView(mode) {
+            var hv = document.getElementById('html-view');
+            var mv = document.getElementById('md-view');
+            var bh = document.getElementById('btn-html');
+            var bm = document.getElementById('btn-md');
+            if (hv) hv.style.display = mode === 'html' ? '' : 'none';
+            if (mv) mv.style.display = mode === 'md' ? '' : 'none';
+            if (bh) bh.classList.toggle('active', mode === 'html');
+            if (bm) bm.classList.toggle('active', mode === 'md');
+            localStorage.setItem('archswift-view', mode);
+        }
+        function copyMD() {
+            var pre = document.getElementById('md-content');
+            if (!pre) return;
+            navigator.clipboard.writeText(pre.textContent).then(function() {
+                var btn = document.querySelector('.md-copy-btn');
+                if (btn) { btn.textContent = 'Copied!'; setTimeout(function(){ btn.textContent = 'Copy Markdown'; }, 2000); }
             });
+        }
+        (function(){
+            var lightBtn = document.getElementById('theme-light');
+            var darkBtn  = document.getElementById('theme-dark');
+            var root     = document.documentElement;
+            function applyTheme(t) {
+                root.setAttribute('data-theme', t);
+                if (lightBtn) lightBtn.classList.toggle('active', t === 'light');
+                if (darkBtn)  darkBtn.classList.toggle('active',  t === 'dark');
+                localStorage.setItem('archswift-theme', t);
+                __graphs.forEach(function(g) { try { g.refresh(); } catch(e){} });
+            }
+            applyTheme(localStorage.getItem('archswift-theme') || 'light');
+            lightBtn && lightBtn.addEventListener('click', function() { applyTheme('light'); });
+            darkBtn  && darkBtn.addEventListener('click',  function() { applyTheme('dark'); });
+        })();
+        (function(){
+            switchView(localStorage.getItem('archswift-view') || 'html');
         })();
         </script>
         </body>
@@ -2007,17 +2300,61 @@ struct ReportGenerator {
         if entries.isEmpty {
             t += "<p style=\"color:var(--text3);font-style:italic\">No signals detected.</p>"
         } else {
-            t += "<div class=\"table-wrap\"><table class=\"file-table\"><thead><tr>"
-            t += "<th>Protocol</th><th>URI / Pattern</th><th>Data</th><th>File</th><th>Module</th>"
-            t += "</tr></thead><tbody>"
+            // Group entries by (proto, display-uri); preserve insertion order
+            struct TrafficGroup {
+                let proto: String
+                let uri: String
+                let dataFmt: String
+                var calls: [(filePath: String, module: String, line: Int)]
+            }
+            var groups: [TrafficGroup] = []
+            var groupIndex: [String: Int] = [:]
             for e in entries {
-                let uri = !e.port.isEmpty && !e.uri.contains(e.port) ? "\(e.uri):\(e.port)" : e.uri
-                let data = e.dataFmt.isEmpty ? "—" : esc(e.dataFmt)
-                let mod  = e.module.isEmpty ? "root" : esc(e.module)
-                let fname = URL(fileURLWithPath: e.filePath).lastPathComponent
-                let link = vsLink(path: e.filePath, label: esc(fname), line: e.line > 0 ? e.line : nil)
-                t += "<tr><td>\(trafficProtoTag(e.proto))</td><td class=\"mono\">\(esc(uri))</td>"
-                t += "<td class=\"mono\">\(data)</td><td class=\"mono\">\(link)</td><td class=\"mono\">\(mod)</td></tr>"
+                let displayURI = !e.port.isEmpty && !e.uri.contains(e.port) ? "\(e.uri):\(e.port)" : e.uri
+                let key = "\(e.proto)|\(displayURI)"
+                if let idx = groupIndex[key] {
+                    groups[idx].calls.append((e.filePath, e.module.isEmpty ? "root" : e.module, e.line))
+                } else {
+                    groupIndex[key] = groups.count
+                    groups.append(TrafficGroup(
+                        proto: e.proto, uri: displayURI,
+                        dataFmt: e.dataFmt.isEmpty ? "—" : e.dataFmt,
+                        calls: [(e.filePath, e.module.isEmpty ? "root" : e.module, e.line)]
+                    ))
+                }
+            }
+
+            t += "<div class=\"table-wrap\"><table class=\"file-table\"><thead><tr>"
+            t += "<th>Protocol</th><th>URI / Pattern</th><th>Data</th><th>Files · Modules</th>"
+            t += "</tr></thead><tbody>"
+            for g in groups {
+                let data = esc(g.dataFmt)
+                let filesHTML: String
+                if g.calls.count == 1 {
+                    let c = g.calls[0]
+                    let fname = URL(fileURLWithPath: c.filePath).lastPathComponent
+                    let link = vsLink(path: c.filePath, label: esc(fname), line: c.line > 0 ? c.line : nil)
+                    filesHTML = "<span class=\"mono\">\(link)</span> <span style=\"color:var(--text3)\">·</span> <span class=\"mono\">\(esc(c.module))</span>"
+                } else {
+                    let items = g.calls.map { c -> String in
+                        let fname = URL(fileURLWithPath: c.filePath).lastPathComponent
+                        let link = vsLink(path: c.filePath, label: esc(fname), line: c.line > 0 ? c.line : nil)
+                        return "<div class=\"traffic-file-item\"><span class=\"mono\">\(link)</span> <span style=\"color:var(--text3)\">·</span> <span class=\"mono\">\(esc(c.module))</span></div>"
+                    }.joined()
+                    filesHTML = "<div class=\"traffic-multi\">\(items)</div>"
+                }
+                let uriCell: String
+                if g.calls.count > 1 {
+                    uriCell = "<span class=\"mono\" style=\"font-weight:600\">\(esc(g.uri))</span> <span class=\"traffic-count\">\(g.calls.count)</span>"
+                } else {
+                    uriCell = "<span class=\"mono\">\(esc(g.uri))</span>"
+                }
+                t += "<tr>"
+                t += "<td style=\"white-space:nowrap\">\(trafficProtoTag(g.proto))</td>"
+                t += "<td>\(uriCell)</td>"
+                t += "<td class=\"mono\" style=\"white-space:nowrap\">\(data)</td>"
+                t += "<td>\(filesHTML)</td>"
+                t += "</tr>"
             }
             t += "</tbody></table></div>"
         }
