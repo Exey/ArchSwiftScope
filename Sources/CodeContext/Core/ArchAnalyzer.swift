@@ -158,6 +158,9 @@ struct ArchAnalyzer {
         let tcaConf = scoreTCA(rc: rc, imports: allImports)
         if tcaConf >= 0.15 { patterns.append(buildTCA(rc: rc, confidence: tcaConf, imports: allImports)) }
 
+        let pureMVCConf = scorePureMVC(rc: rc, imports: allImports)
+        if pureMVCConf >= 0.15 { patterns.append(buildPureMVC(rc: rc, confidence: pureMVCConf, imports: allImports)) }
+
         let vipConf = scoreVIP(rc: rc)
         if vipConf >= 0.15 { patterns.append(buildVIP(rc: rc, confidence: vipConf)) }
 
@@ -251,6 +254,12 @@ struct ArchAnalyzer {
         let repository:     RoleStats
         let command:        RoleStats
         let eventBus:       RoleStats
+
+        // PureMVC-specific roles
+        let pmvcFacade:     RoleStats
+        let pmvcProxy:      RoleStats
+        let pmvcMediator:   RoleStats
+
         let notificationNameExts: Int
 
         let businessLogicProtos:     Int
@@ -406,6 +415,23 @@ struct ArchAnalyzer {
                        l.contains("eventbus") || l.hasSuffix("eventcenter")
             })
 
+            pmvcFacade = stats({
+                let n = $0.fileNameWithoutExtension.lowercased()
+                return n.hasSuffix("facade") || n == "applicationfacade"
+            }, decl: { $0.lowercased().hasSuffix("facade") })
+
+            pmvcProxy = stats({
+                let n = $0.fileNameWithoutExtension.lowercased()
+                let p = $0.filePath.lowercased()
+                return n.hasSuffix("proxy") || p.contains("/proxies/")
+            }, decl: { $0.lowercased().hasSuffix("proxy") })
+
+            pmvcMediator = stats({
+                let n = $0.fileNameWithoutExtension.lowercased()
+                let p = $0.filePath.lowercased()
+                return n.hasSuffix("mediator") || p.contains("/mediators/")
+            }, decl: { $0.lowercased().hasSuffix("mediator") })
+
             notificationNameExts = files.flatMap(\.declarations)
                 .filter { $0.kind == .extension && ($0.name == "Notification.Name" || $0.name == "NSNotification.Name") }.count
 
@@ -513,6 +539,10 @@ struct ArchAnalyzer {
         guard rc.viewModel.fileCount + rc.viewModel.declCount >= 1 else { return 0 }
         guard rc.coordinator.fileCount + rc.coordinator.declCount >= 1 else { return 0 }
 
+        // Proportion check: coordinator count must be ≥ 0.5% of views (coordinators are naturally fewer)
+        let viewTotal = rc.view.fileCount + rc.viewController.fileCount
+        if viewTotal >= 20 && rc.coordinator.fileCount < max(1, viewTotal / 200) { return 0 }
+
         let coordTotal   = rc.coordinator.fileCount + rc.coordinator.declCount
         let serviceTotal = rc.service.fileCount + rc.service.declCount
         // Defer to MVVM+S when services dominate and coordinators are incidental.
@@ -530,6 +560,10 @@ struct ArchAnalyzer {
         guard rc.viewModel.fileCount + rc.viewModel.declCount >= 1 else { return 0 }
         guard rc.service.fileCount >= 1 else { return 0 }
 
+        // Proportion check: service count must be ≥ 1% of views
+        let viewTotal = rc.view.fileCount + rc.viewController.fileCount
+        if viewTotal >= 20 && rc.service.fileCount < max(1, viewTotal / 100) { return 0 }
+
         let coordTotal   = rc.coordinator.fileCount + rc.coordinator.declCount
         let serviceTotal = rc.service.fileCount + rc.service.declCount
         // Only defer to MVVM+C when coordinators genuinely dominate services.
@@ -546,6 +580,11 @@ struct ArchAnalyzer {
 
     private func scoreMVVM(rc: RoleCounter) -> Double {
         guard rc.viewModel.fileCount + rc.viewModel.declCount >= 1 else { return 0 }
+
+        // Proportion check: ViewModel count must be ≥ 1% of views/controllers
+        let viewTotal = rc.view.fileCount + rc.viewController.fileCount
+        if viewTotal >= 20 && rc.viewModel.fileCount < max(1, viewTotal / 100) { return 0 }
+
         let vmTotal = rc.viewModel.fileCount + rc.viewModel.declCount
         var s = vmTotal >= 2 ? 0.40 : 0.22
         if rc.viewModel.fileCount >= 3 { s += 0.20 }
@@ -589,6 +628,29 @@ struct ArchAnalyzer {
         var s = 0.5
         if rc.view.fileCount  >= 3 { s += 0.30 }
         if rc.model.fileCount >= 1 { s += 0.20 }
+        return min(s, 1.0)
+    }
+
+    private func scorePureMVC(rc: RoleCounter, imports: Set<String>) -> Double {
+        var s = 0.0
+        if imports.contains("PureMVC") { s += 0.75 }
+
+        let facadeTotal   = rc.pmvcFacade.fileCount   + rc.pmvcFacade.declCount
+        let proxyTotal    = rc.pmvcProxy.fileCount     + rc.pmvcProxy.declCount
+        let mediatorTotal = rc.pmvcMediator.fileCount  + rc.pmvcMediator.declCount
+        let cmdTotal      = rc.command.fileCount       + rc.command.declCount
+
+        if facadeTotal   >= 1 { s += 0.10 }
+        if proxyTotal    >= 1 { s += proxyTotal    >= 3 ? 0.15 : 0.08 }
+        if mediatorTotal >= 1 { s += mediatorTotal >= 3 ? 0.15 : 0.08 }
+        if cmdTotal      >= 1 { s += cmdTotal      >= 3 ? 0.10 : 0.05 }
+
+        // Without the import require at least two distinct role types to avoid false positives
+        if !imports.contains("PureMVC") {
+            let roleCount = [facadeTotal > 0, proxyTotal > 0, mediatorTotal > 0, cmdTotal > 0].filter { $0 }.count
+            if roleCount < 2 { return 0 }
+        }
+
         return min(s, 1.0)
     }
 
@@ -720,6 +782,16 @@ struct ArchAnalyzer {
         return ArchDetectedPattern(name: "MV", confidence: confidence, letters: [
             ArchLetter("M", "Model", rc.model, detail: roleDetail(rc.model)),
             ArchLetter("V", "View",  rc.view,  detail: "\(rc.view.fileCount) SwiftUI views"),
+        ], hint: hint)
+    }
+
+    private func buildPureMVC(rc: RoleCounter, confidence: Double, imports: Set<String>) -> ArchDetectedPattern {
+        let hint: String? = imports.contains("PureMVC") ? "import PureMVC" : nil
+        return ArchDetectedPattern(name: "PureMVC", confidence: confidence, letters: [
+            ArchLetter("F",   "Facade",   rc.pmvcFacade,   detail: roleDetail(rc.pmvcFacade)),
+            ArchLetter("Prx", "Proxy",    rc.pmvcProxy,    detail: roleDetail(rc.pmvcProxy)),
+            ArchLetter("Med", "Mediator", rc.pmvcMediator, detail: roleDetail(rc.pmvcMediator)),
+            ArchLetter("Cmd", "Command",  rc.command,      detail: roleDetail(rc.command)),
         ], hint: hint)
     }
 

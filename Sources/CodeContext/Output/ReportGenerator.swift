@@ -348,7 +348,7 @@ struct ReportGenerator {
         let externalLibsHTML: String = {
             guard let extNames = classifiedImports[.external], !extNames.isEmpty else { return "" }
             let cleaned = Set(extNames.map { $0.components(separatedBy: ":").first ?? $0 })
-            return cleaned.sorted().map { "<span class='tag tag-external'>\(esc($0))</span>" }.joined(separator: " ")
+            return buildCategorizedFrameworksHTML(frameworks: cleaned, tagClass: "tag-external")
         }()
 
         // Architecture LAYERS — classify files by path patterns
@@ -429,9 +429,13 @@ struct ReportGenerator {
                 let primaryCount = l.fileCount > 0 ? l.fileCount : l.declCount
                 let countStr = primaryCount > 0 ? String(primaryCount) : "—"
                 let linkHTML: String = {
-                    guard let path = l.examplePaths.first else { return "" }
-                    let fname = URL(fileURLWithPath: path).lastPathComponent
-                    return "<div class='arch-letter-link'><a href='vscode://file/\(path)'>\(esc(fname))</a></div>"
+                    let paths = l.examplePaths.prefix(3)
+                    guard !paths.isEmpty else { return "" }
+                    let links = paths.map { path -> String in
+                        let fname = URL(fileURLWithPath: path).lastPathComponent
+                        return "<a href='vscode://file/\(path)'>\(esc(fname))</a>"
+                    }
+                    return "<div class='arch-letter-link'>\(links.joined(separator: " "))</div>"
                 }()
                 return """
                 <div class='arch-letter-card \(healthClass)\(extraClass)'>\
@@ -549,7 +553,7 @@ struct ReportGenerator {
         let appleFrameworksCount = filteredAppleFrameworks.count
         let appleFrameworksHTML: String = {
             guard !filteredAppleFrameworks.isEmpty else { return "" }
-            return filteredAppleFrameworks.sorted().map { "<span class='tag tag-apple'>\($0)</span>" }.joined(separator: " ")
+            return buildCategorizedFrameworksHTML(frameworks: filteredAppleFrameworks, tagClass: "tag-apple")
         }()
 
         // ─── Security Risks ───
@@ -562,6 +566,13 @@ struct ReportGenerator {
             ?? SecurityAnalyzer.computeScore(resolvedAPResults, fileCount: swiftFileCountForScore)
         let apCardHTML = buildSecurityHTML(resolvedAPResults, score: resolvedSecurityScore)
         let securityScoreJSONLiteral = securityScoreJSON(resolvedSecurityScore)
+
+        // ─── Traffic ───
+        print("\(ts())  Scanning traffic signals...")
+        let trafficResult = TrafficScanner().scan(files: projectFiles)
+        if trafficResult.hasData {
+            print("\(ts())  Traffic: \(trafficResult.inbound.count) inbound · \(trafficResult.outbound.count) outbound")
+        }
 
         // ─── OOP vs POP ───
         let resolvedOOPStats = oopStats ?? OOPvsPOPAnalyzer.analyze(files: projectFiles)
@@ -720,42 +731,176 @@ struct ReportGenerator {
             let totalLinesAll = projectFiles.reduce(0) { $0 + $1.lineCount }
             var pkgLines: [String: Int] = [:]
             var pkgDecls: [String: Int] = [:]
+            var pkgFileMap: [String: [ParsedFile]] = [:]
             for file in projectFiles {
                 let key = file.packageName.isEmpty ? "App" : file.packageName
                 pkgLines[key, default: 0] += file.lineCount
                 pkgDecls[key, default: 0] += file.declarations.filter { $0.kind != .extension }.count
+                pkgFileMap[key, default: []].append(file)
             }
             let lineThreshold = Double(totalLinesAll) * 0.015
 
-            var content = ""
-            if let localNames = classifiedImports[.local], !localNames.isEmpty {
-                let hasApp = pkgLines["App", default: 0] > 0
-                var tags: [String] = []
-                if hasApp {
-                    let appLines = pkgLines["App", default: 0]
-                    tags.append("<a href='#pkg-App' class='tag tag-local pkg-link pkg-major'><span class='pkg-name'>📱 App</span><span class='bs-badge-right'>\(appLines.formatted()) loc</span></a>")
+            guard let localNames = classifiedImports[.local], !localNames.isEmpty else {
+                var c = ""
+                if !detectedPrivateFrameworks.isEmpty {
+                    let t = detectedPrivateFrameworks.sorted().map { "<span class='tag tag-private'>\($0)</span>" }.joined(separator: " ")
+                    c += "<div><p class='private-warn'>🔒 Possible Private Frameworks (\(detectedPrivateFrameworks.count)) — may cause App Store rejection:</p><div class='tag-cloud'>\(t)</div></div>"
                 }
-                for name in localNames.sorted() {
-                    let bs = packageBuildSystem[name]
-                    let bsLabel = bs != nil && bs != .unknown ? "<span class='bs-badge-right'>\(bs!.rawValue)</span>" : ""
-                    let anchor = name.replacingOccurrences(of: " ", with: "-")
-                    let lines = pkgLines[name, default: 0]
-                    let decls = pkgDecls[name, default: 0]
-                    let isMajor = Double(lines) >= lineThreshold && lines >= 10_000 && decls >= 80
-                    let metalIcon = metalPackages.contains(name) ? "🔘 " : ""
-                    let majorClass = isMajor ? " pkg-major" : ""
-                    tags.append("<a href='#pkg-\(anchor)' class='tag tag-local pkg-link\(majorClass)'><span class='pkg-name'>\(metalIcon)\(name)</span>\(bsLabel)</a>")
-                }
-                let totalWithApp = localNames.count + (hasApp ? 1 : 0)
-                content += "<div class='import-group'><div style='color:var(--text3);font-size:12px;margin-bottom:8px'>🏠 \(totalWithApp) packages</div><div class='pkg-grid'>\(tags.joined(separator: "\n"))</div></div>"
+                return c
             }
+
+            // Build tag HTML for one package
+            func makeTag(_ name: String, isApp: Bool = false) -> String {
+                let anchor = name.replacingOccurrences(of: " ", with: "-")
+                if isApp {
+                    let loc = pkgLines["App", default: 0]
+                    return "<a href='#pkg-App' class='tag tag-local pkg-link pkg-major'><span class='pkg-name'>📱 App</span><span class='bs-badge-right'>\(loc.formatted()) loc</span></a>"
+                }
+                let lines = pkgLines[name, default: 0]
+                let decls = pkgDecls[name, default: 0]
+                let isMajor = Double(lines) >= lineThreshold && lines >= 10_000 && decls >= 80
+                let majorClass = isMajor ? " pkg-major" : ""
+                let bs = packageBuildSystem[name]
+                let bsLabel = bs != nil && bs != .unknown ? "<span class='bs-badge-right'>\(bs!.rawValue)</span>" : ""
+                let metalIcon = metalPackages.contains(name) ? "🔘 " : ""
+                return "<a href='#pkg-\(anchor)' class='tag tag-local pkg-link\(majorClass)'><span class='pkg-name'>\(metalIcon)\(name)</span>\(bsLabel)</a>"
+            }
+
+            // ── Package categorisation via weighted scoring ──────────────────
+            enum PkgCat { case ui, data, arch, dev }
+
+            func scorePackage(_ name: String) -> PkgCat {
+                let files  = pkgFileMap[name] ?? []
+                let imps   = Set(files.flatMap(\.imports))
+                let decls  = files.flatMap(\.declarations)
+                let lower  = name.lowercased()
+                var sc: [PkgCat: Int] = [.ui: 0, .data: 0, .arch: 0, .dev: 0]
+
+                // ── DEV TOOLS ──────────────────────────────────────────────
+                for imp in ["SwiftSyntax","SwiftLintFramework","ArgumentParser","PackageDescription"] where imps.contains(imp) {
+                    sc[.dev, default: 0] += 5
+                }
+                for d in decls where ["BuildToolPlugin","CommandPlugin","Macro","ExpressionMacro","PeerMacro","MemberMacro"].contains(d.name) {
+                    sc[.dev, default: 0] += 5
+                }
+                if files.contains(where: { let p = $0.filePath.lowercased()
+                    return p.contains("/plugin") || p.contains("/macro") || p.contains("/tools/") || p.contains("/linter/") || p.contains("/generator/")
+                }) { sc[.dev, default: 0] += 5 }
+                for w in ["plugin","macro","tool","dev","lint","mock","testsupport","snapshot"] where lower.contains(w) {
+                    sc[.dev, default: 0] += 2
+                }
+                if imps.contains("XCTest") { sc[.dev, default: 0] += 1 }
+
+                // ── UI / MEDIA ─────────────────────────────────────────────
+                let uiHeavy: Set<String> = ["UIKit","SwiftUI","AppKit","WatchKit","TVUIKit",
+                    "CoreGraphics","QuartzCore","AVFoundation","AVKit","Metal","MetalKit",
+                    "SceneKit","SpriteKit","ARKit","RealityKit","CoreImage","CoreAnimation",
+                    "MediaPlayer","PhotosUI","WidgetKit","VisionKit","PencilKit","GameKit"]
+                for imp in uiHeavy where imps.contains(imp) { sc[.ui, default: 0] += 4 }
+                let uiSuffixes = ["View","ViewController","Cell","Button","Label","Screen","Animation","Renderer","Shape","Drawing","Layer"]
+                for d in decls where uiSuffixes.contains(where: { d.name.hasSuffix($0) }) { sc[.ui, default: 0] += 3 }
+                if files.contains(where: { let p = $0.filePath.lowercased()
+                    return p.contains("/views/") || p.contains("/screens/") || p.contains("/components/") || p.contains("/animations/") || p.contains("/ui/")
+                }) { sc[.ui, default: 0] += 4 }
+                for imp in ["CoreText","CoreVideo","ImageIO","PDFKit","QuickLook"] where imps.contains(imp) { sc[.ui, default: 0] += 2 }
+                for file in files {
+                    let fn = file.fileNameWithoutExtension.lowercased()
+                    if ["view","button","slider","label","image","animation","drawing","renderer","shape","color","screen"].contains(where: { fn.contains($0) }) {
+                        sc[.ui, default: 0] += 2
+                    }
+                }
+                for w in ["ui","media","video","audio","player","animation","lottie","rendering","graphics","design","theme"] where lower.contains(w) {
+                    sc[.ui, default: 0] += 1
+                }
+
+                // ── DATA / NETWORKING ──────────────────────────────────────
+                let dataHeavy: Set<String> = ["CoreData","CloudKit","RealmSwift","GRDB","SwiftData",
+                    "UserNotifications","CoreSpotlight","KeychainAccess","FMDB"]
+                for imp in dataHeavy where imps.contains(imp) { sc[.data, default: 0] += 4 }
+                let dataKw = ["Model","DTO","Entity","Response","Request","Repository","Cache","Database","Realm","Keychain"]
+                for d in decls where dataKw.contains(where: { d.name.hasSuffix($0) || d.name.hasPrefix($0) }) {
+                    sc[.data, default: 0] += 3
+                }
+                if files.contains(where: { let p = $0.filePath.lowercased()
+                    return p.contains("/models/") || p.contains("/dto/") || p.contains("/entities/") ||
+                           p.contains("/database/") || p.contains("/persistence/") ||
+                           p.contains("/api/") || p.contains("/network/") || p.contains("/requests/")
+                }) { sc[.data, default: 0] += 4 }
+                if imps.contains("Network")   { sc[.data, default: 0] += 2 }
+                if imps.contains("CryptoKit") { sc[.data, default: 0] += 2 }
+                for file in files {
+                    let fn = file.fileNameWithoutExtension.lowercased()
+                    if ["repository","apiclient","cache","keychain","database","networking","endpoint","mapper"].contains(where: { fn.contains($0) }) {
+                        sc[.data, default: 0] += 2
+                    }
+                }
+                for w in ["data","storage","persistence","network","api","cache","database","keychain","repository","model"] where lower.contains(w) {
+                    sc[.data, default: 0] += 1
+                }
+
+                // ── ARCHITECTURE / SYSTEM ──────────────────────────────────
+                let archHeavy: Set<String> = ["Combine","Darwin","os","Dispatch","Observation","SystemConfiguration","OSLog"]
+                for imp in archHeavy where imps.contains(imp) { sc[.arch, default: 0] += 3 }
+                let archSfx = ["Coordinator","Router","Container","Middleware","Reducer","Manager",
+                               "Provider","Interactor","Presenter","UseCase","State","Action","Environment"]
+                for d in decls where archSfx.contains(where: { d.name.hasSuffix($0) }) { sc[.arch, default: 0] += 3 }
+                if files.contains(where: { let p = $0.filePath.lowercased()
+                    return p.contains("/utilities/") || p.contains("/helpers/") || p.contains("/extensions/") ||
+                           p.contains("/core/") || p.contains("/navigation/") || p.contains("/coordinator")
+                }) { sc[.arch, default: 0] += 3 }
+                if imps.contains("Combine") && !imps.contains("SwiftUI") && !imps.contains("UIKit") {
+                    sc[.arch, default: 0] += 2
+                }
+                for file in files {
+                    let fn = file.fileNameWithoutExtension.lowercased()
+                    if ["manager","coordinator","router","dependency","container","middleware","reducer","factory","builder"].contains(where: { fn.contains($0) }) {
+                        sc[.arch, default: 0] += 2
+                    }
+                }
+                for w in ["core","foundation","architecture","system","utility","helpers","extensions","common","base","shared","infrastructure","platform"] where lower.contains(w) {
+                    sc[.arch, default: 0] += 1
+                }
+
+                // ── Resolution ────────────────────────────────────────────
+                let devS  = sc[.dev,  default: 0]
+                let uiS   = sc[.ui,   default: 0]
+                let dataS = sc[.data, default: 0]
+                let archS = sc[.arch, default: 0]
+                if devS  >= 5                  { return .dev  }
+                if uiS   >= 4 && uiS > dataS  { return .ui   }
+                if dataS >= 4 && dataS > uiS  { return .data }
+                return [(PkgCat.ui, uiS), (.data, dataS), (.arch, archS), (.dev, devS)]
+                    .max(by: { $0.1 < $1.1 })?.0 ?? .arch
+            }
+
+            // ── Group into four columns ──────────────────────────────────
+            let hasApp = pkgLines["App", default: 0] > 0
+            var groups: [PkgCat: [String]] = [.ui: [], .data: [], .arch: [], .dev: []]
+            if hasApp { groups[.ui]!.insert(makeTag("App", isApp: true), at: 0) }
+            for name in localNames.sorted() { groups[scorePackage(name)]!.append(makeTag(name)) }
+
+            let totalWithApp = localNames.count + (hasApp ? 1 : 0)
+            let colDefs: [(PkgCat, String, String)] = [
+                (.dev,  "🔧", "DEV TOOLS"),
+                (.arch, "⚙️", "ARCHITECTURE / SYSTEM"),
+                (.data, "🗄️", "DATA / NETWORKING"),
+                (.ui,   "📱", "UI / MEDIA"),
+            ]
+            var content = "<div style='color:var(--text3);font-size:12px;margin-bottom:12px'>🏠 \(totalWithApp) packages</div>"
+            content += "<div class='pkg-cat-grid'>"
+            for (cat, icon, label) in colDefs {
+                let tags = groups[cat] ?? []
+                let countStr = tags.isEmpty ? "" : " <span class='count'>(\(tags.count))</span>"
+                let inner = tags.isEmpty
+                    ? "<div style='color:var(--text3);font-size:12px;font-style:italic'>—</div>"
+                    : "<div class='pkg-grid'>\(tags.joined(separator: "\n"))</div>"
+                content += "<div class='pkg-cat-col'><div class='pkg-cat-head'>\(icon) \(label)\(countStr)</div>\(inner)</div>"
+            }
+            content += "</div>"
+
             if !detectedPrivateFrameworks.isEmpty {
                 let tags = detectedPrivateFrameworks.sorted().map { "<span class='tag tag-private'>\($0)</span>" }.joined(separator: " ")
                 content += "<div style='margin-top:12px'><p class='private-warn'>🔒 Possible Private Frameworks (\(detectedPrivateFrameworks.count)) — may cause App Store rejection:</p><div class='tag-cloud'>\(tags)</div></div>"
-            }
-            if !monkeyPatchedLibs.isEmpty {
-                let tags = monkeyPatchedLibs.map { lib in "<span class='tag tag-external'>\(esc(lib.name)) <span style='font-size:10px;color:var(--text3)'>\(lib.fileCount) files</span></span>" }.joined(separator: " ")
-                content += "<div style='margin-top:12px'><p class='private-warn' style='color:var(--text3)'>🐒 Vendored C/C++ Libraries (\(monkeyPatchedLibs.count)) — excluded from stats:</p><div class='tag-cloud'>\(tags)</div></div>"
             }
             return content
         }()
@@ -814,19 +959,25 @@ struct ReportGenerator {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🧩 Components <span class='count'>(\(detectedComponents.count))</span></h3>\(componentsHTML)</div>"
             }
             if !appleFrameworksHTML.isEmpty {
-                h += "<div class='sub-card'><h3 class='sub-card-title'>🍎 Apple Frameworks <span class='count'>(\(appleFrameworksCount))</span></h3><div class='tag-cloud'>\(appleFrameworksHTML)</div></div>"
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🍎 Apple Frameworks <span class='count'>(\(appleFrameworksCount))</span></h3>\(appleFrameworksHTML)</div>"
             }
             if !externalLibsHTML.isEmpty {
-                h += "<div class='sub-card'><h3 class='sub-card-title'>📦 External Libraries <span class='count'>(\(externalLibsCount))</span></h3><div class='tag-cloud'>\(externalLibsHTML)</div></div>"
+                h += "<div class='sub-card'><h3 class='sub-card-title'>📦 External Libraries <span class='count'>(\(externalLibsCount))</span></h3>\(externalLibsHTML)</div>"
+            }
+            if !monkeyPatchedLibs.isEmpty {
+                let vendoredTags = monkeyPatchedLibs.map { lib in
+                    "<span class='tag tag-external'>\(esc(lib.name)) <span style='font-size:10px;color:var(--text3)'>\(lib.fileCount) files</span></span>"
+                }.joined(separator: " ")
+                h += "<div class='sub-card'><h3 class='sub-card-title' style='color:var(--text3)'>🐒 Vendored C/C++ Libraries <span class='count'>(\(monkeyPatchedLibs.count))</span></h3><p style='font-size:12px;color:var(--text3);margin:0 0 10px'>Excluded from analysis.</p><div class='tag-cloud'>\(vendoredTags)</div></div>"
             }
             if showArchGraph {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🗺️ Architecture Graph <span class='count'>(\(archRawConnections) connections)</span></h3><div id='arch-graph' class='arch-graph-container'></div></div>"
             }
-            if !localPackagesSubCardHTML.isEmpty {
-                h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
-            }
             if !designPatternsSubCardHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🎨 Design Patterns <span class='count'>(\(totalPatternCount))</span></h3>\(designPatternsSubCardHTML)</div>"
+            }
+            if !localPackagesSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
             }
             return h
         }()
@@ -1120,6 +1271,9 @@ struct ReportGenerator {
                 .tag-local { background: #e3f2fd; color: #1565c0; }
                 .tag-cloud { line-height: 2.2; }
                 .pkg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 8px; }
+                .pkg-cat-grid { display: flex; flex-direction: column; gap: 20px; }
+                .pkg-cat-col { }
+                .pkg-cat-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); margin-bottom: 8px; }
                 .pkg-link { display: flex; align-items: center; justify-content: space-between; text-decoration: none; cursor: pointer; transition: background 0.15s; }
                 .pkg-link:hover { background: #bbdefb; }
                 .pkg-major { border: 2px solid var(--accent); font-weight: 600; }
@@ -1240,8 +1394,9 @@ struct ReportGenerator {
                 .arch-letter-name { font-size: 11px; font-weight: 600; color: var(--text2); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
                 .arch-letter-count { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 8px; line-height: 1; }
                 .arch-letter-detail { font-size: 10px; color: var(--text3); margin-top: 4px; line-height: 1.4; }
-                .arch-letter-link { font-size: 10px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-                .arch-letter-link a { color: var(--accent); text-decoration: none; font-family: 'SF Mono', Menlo, monospace; }
+                .arch-letter-link { font-size: 10px; margin-top: 4px; overflow: hidden; }
+                .arch-letter-link a { display: block; margin-top: 4px; color: var(--accent); text-decoration: none; font-family: 'SF Mono', Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
+                .fw-cat-col-head { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); margin-bottom: 4px; }
                 .arch-letter-card.health-weak { border: 1px solid #ff9500; }
                 .arch-letter-card.health-missing { opacity: 0.45; border: 1px dashed var(--border); }
                 .arch-letter-card.health-weak .arch-letter-big { color: #ff9500; }
@@ -1339,9 +1494,11 @@ struct ReportGenerator {
                     \(metadata.metalFiles.count > 0 ? "<div class=\"summary-card\"><div class=\"num\">\(metadata.metalFiles.count)</div><div class=\"label\">🔘 Metal</div></div>" : "")
                 </div>
             </div>
+            \(buildVSCodeLinksCard(repoPath: repoPath))
             <div class="card">
                 \(architectureCardHTML)
             </div>
+            \(trafficResult.hasData ? "<div class=\"card\">\(buildTrafficHTML(trafficResult))</div>" : "")
             <div class="card">
                 \(oopCardHTML)
             </div>
@@ -1546,6 +1703,27 @@ struct ReportGenerator {
             \(packageGraphScripts)
         })();
         (function(){
+            var vsBtn = document.getElementById('vs-path-btn');
+            if (vsBtn) {
+                vsBtn.addEventListener('click', function(){
+                    var inp = document.getElementById('vs-path-input');
+                    var msg = document.getElementById('vs-path-msg');
+                    if (!inp) return;
+                    var newBase  = inp.value.trim().replace(/\\/+$/, '');
+                    var origBase = inp.dataset.orig;
+                    if (!newBase || newBase === origBase) return;
+                    var prefix    = 'vscode://file' + origBase;
+                    var newPrefix = 'vscode://file' + newBase;
+                    var links = document.querySelectorAll('a[href^="' + prefix + '"]');
+                    links.forEach(function(a){
+                        a.setAttribute('href', newPrefix + a.getAttribute('href').slice(prefix.length));
+                    });
+                    inp.dataset.orig = newBase;
+                    if (msg) msg.textContent = links.length + ' links updated';
+                });
+            }
+        })();
+        (function(){
             var html = document.documentElement;
             var btn  = document.getElementById('theme-btn');
             var saved = localStorage.getItem('archswift-theme') || 'light';
@@ -1673,6 +1851,193 @@ struct ReportGenerator {
     private func vsLink(path: String, label: String, line: Int? = nil) -> String {
         let href = line.map { "vscode://file/\(path):\($0)" } ?? "vscode://file/\(path)"
         return "<a href=\"\(href)\" class=\"vs-link\" title=\"Open in VS Code\">\(label)</a>"
+    }
+
+    // MARK: - VS Code Links Card
+
+    private func buildVSCodeLinksCard(repoPath: String) -> String {
+        guard !repoPath.isEmpty else { return "" }
+        let safePath = esc(repoPath)
+        return """
+        <div class="card" id="vs-links-card" style="padding:14px 28px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span style="font-size:18px">🔗</span>
+                <h3 style="margin:0;font-size:15px;font-weight:600;color:var(--text)">VS Code Links</h3>
+            </div>
+            <p style="font-size:13px;color:var(--text3);margin:0 0 10px">Edit the path prefix for <code style="font-family:'SF Mono',Menlo,monospace;font-size:12px">vscode://</code> links — useful when sharing this report with someone whose project is at a different location.</p>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <input id="vs-path-input" type="text" value="\(safePath)" data-orig="\(safePath)"
+                    style="flex:1;min-width:200px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'SF Mono',Menlo,monospace;font-size:12px;outline:none">
+                <button id="vs-path-btn" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap">Change Path</button>
+                <span id="vs-path-msg" style="font-size:12px;color:var(--text3)"></span>
+            </div>
+        </div>
+        """
+    }
+
+    // MARK: - Framework Categorization
+
+    private func buildCategorizedFrameworksHTML(frameworks: Set<String>, tagClass: String) -> String {
+        guard !frameworks.isEmpty else { return "" }
+        let categories: [(icon: String, name: String)] = [
+            ("📱", "UI/Media"),
+            ("🗄️", "Data/Persistence"),
+            ("⚙️", "Architecture/System"),
+            ("🔧", "Dev Tools"),
+        ]
+        var buckets: [String: [String]] = [:]
+        for fw in frameworks {
+            buckets[frameworkCategory(fw), default: []].append(fw)
+        }
+        for key in buckets.keys { buckets[key]?.sort() }
+
+        // flex-grow proportional to item count so larger categories get more width
+        let cols = categories.compactMap { cat -> String? in
+            guard let items = buckets[cat.name], !items.isEmpty else { return nil }
+            let n = items.count
+            let tags = items.map { "<span class='tag \(tagClass)'>\(esc($0))</span>" }.joined(separator: " ")
+            return "<div style='flex:\(n) 0 140px;min-width:120px'><div class='fw-cat-col-head'>\(cat.icon) \(cat.name)</div><div class='tag-cloud' style='line-height:2'>\(tags)</div></div>"
+        }
+        guard !cols.isEmpty else { return "" }
+        return "<div style='display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:4px;align-items:flex-start'>\(cols.joined(separator: "\n"))</div>"
+    }
+
+    private func frameworkCategory(_ name: String) -> String {
+        let full = name.lowercased()
+        let base = (name.components(separatedBy: ".").first ?? name).lowercased()
+
+        // os.* submodules — split before the base lookup
+        if base == "os" {
+            if full.contains("signpost") || full.contains("log") { return "Dev Tools" }
+            return "Architecture/System"  // os.OSAllocatedUnfairLock, os.lock, etc.
+        }
+
+        // Architecture / System — reactive, DI, concurrency, system frameworks
+        let arch: Set<String> = [
+            // Reactive / functional
+            "combine", "rxswift", "rxcocoa", "rxrelay", "rxblockingtestscheduler",
+            "reactiveswift", "opencombine", "composablearchitecture", "reswift", "reactorkit",
+            // DI
+            "swinject", "resolver", "factory", "needle",
+            // Utilities / concurrency
+            "casepaths", "asyncalgorithms", "swiftcheck", "validatedpropertykit",
+            "backgroundtasks", "notificationcenter", "objectivec",
+            "notify", "simd", "argumentparser", "observation", "distributed",
+            "synchronization", "orderedcollections", "swiftsignalkit", "tdbinding",
+            "staticthreads", "swiftapi", "instance", "instanceimpl",
+            "usernotifications", "pushkit", "dispatch",
+            // Apple system / logic frameworks
+            "foundation", "cocoa", "intents", "translation", "coretelephony",
+            "accelerate", "naturallanguage",
+            // Native system / C++ libs
+            "darwin", "glibc", "ucrt", "shellapi",
+            "iokit", "javascriptcore",
+            "endian", "expected", "filesystem", "mips", "nlohmann",
+            "smmintrin", "span",
+        ]
+        if arch.contains(base) || base.hasPrefix("rx") { return "Architecture/System" }
+        // C++ header-style names: fixed_*, vectors, shelf-pack, etc.
+        if base.hasPrefix("fixed_") || base.hasPrefix("vectors") || base.contains("shelf-pack") { return "Architecture/System" }
+
+        // Dev Tools — testing, linting, build, logging, crypto
+        let dev: Set<String> = [
+            "xctest", "testing", "swifttesting", "quick", "nimble", "snapshottesting",
+            "swiftlint", "swiftformat", "swiftgen", "sourcery",
+            "swiftsyntax", "swiftsyntaxbuilder", "swiftsyntaxmacros", "swiftsyntaxmacroexpansion",
+            "swiftcompilerplugin", "languageserverprotocol", "buildserverprotocol", "symbolkit",
+            "packagedescription", "xcodeproj", "xcodegen", "tuist", "pbxproj", "xcscheme",
+            "bazelrunfiles", "bazeltestobservation",
+            "oslog", "pulse", "swiftlog", "cocoalumberjack",
+            "cryptokit", "jwtkit", "commoncrypto",
+            "endpointsecurity", "coreservices", "mobilecoreservices",
+            "pathkit", "rainbow", "swiftcli", "swiftcmodule",
+            "spectre", "customdump", "appcenter", "appcentercrashe", "appcentercrashs",
+            "fabkitprotocol", "boost", "lldb",
+            "assertmacros", "languageserverprotocoltransport",
+        ]
+        if dev.contains(base) { return "Dev Tools" }
+        if base.hasPrefix("bazel") || (base.contains("syntax") && base.contains("swift")) { return "Dev Tools" }
+
+        // UI / Media — rendering, AV, AR/VR, maps, UI toolkits
+        let ui: Set<String> = [
+            "swiftui", "uikit", "appkit", "tvuikit", "watchkit", "tvservices",
+            "snapkit", "tinyconstraints", "hero", "lottie", "charts", "swiftuix", "tokamak",
+            "avfaudio", "audiotoolbox", "audiounit", "avfoundation", "avkit",
+            "callkit", "clockkit",
+            "coregraphics", "coreimage", "coremedia", "coretext", "corevideo",
+            "coreanimation", "corehaptics", "coremotion", "sensorkit",
+            "eventkit", "eventkitui", "glkit", "iosurface", "linkpresentation",
+            "mediaplayer", "messageui", "messages",
+            "metalperformanceshaders", "metalkit", "metal",
+            "pdfkit", "passkit", "quartzcore", "quicklook", "replaykit",
+            "safariservices", "speech", "usernotificationsui", "visionkit",
+            "asyncdisplaykit", "sdwebimage", "kingfisher", "nuke",
+            "arkit", "realitykit", "scenekit", "spritekit", "gamekit", "gameplaykit",
+            "mapkit", "corelocation", "corelocationui",
+            "photos", "photosui", "vision",
+            "widgetkit", "appintents",
+            "tguikit", "fxpagecontrol", "componentflow", "display",
+            "opengl", "openglles", "avrouting", "videotoolbox",
+            "media", "thorvg", "gif_lib", "webp", "mozjpeg", "metal_stdlib",
+            "ecore", "evas", "efl",
+        ]
+        if ui.contains(base) { return "UI/Media" }
+        // Media codec libs (libavcodec, libavformat, libyuv, libswresample, …)
+        if base.hasPrefix("lib") || base.hasPrefix("ecore") || base.hasPrefix("evas") { return "UI/Media" }
+
+        // Data / Persistence — storage, networking, serialisation, contacts
+        // addressbook is contact data, not UI
+        if base == "addressbook" || base == "addressbookui" { return "Data/Persistence" }
+
+        return "Data/Persistence"
+    }
+
+    // MARK: - Traffic Card
+
+    private func buildTrafficHTML(_ result: TrafficResult) -> String {
+        var h = "<h2>🛜 Traffic</h2>"
+        h += "<p class=\"subtitle\">\(result.inbound.count) inbound · \(result.outbound.count) outbound connection signals detected from string literals.</p>"
+        h += renderTrafficTable(title: "📥 Inbound", entries: result.inbound)
+        h += renderTrafficTable(title: "📤 Outbound", entries: result.outbound)
+        return h
+    }
+
+    private func renderTrafficTable(title: String, entries: [TrafficEntry]) -> String {
+        var t = "<div class=\"sub-card\"><h3 class=\"sub-card-title\">\(title) <span class=\"count\">(\(entries.count))</span></h3>"
+        if entries.isEmpty {
+            t += "<p style=\"color:var(--text3);font-style:italic\">No signals detected.</p>"
+        } else {
+            t += "<div class=\"table-wrap\"><table class=\"file-table\"><thead><tr>"
+            t += "<th>Protocol</th><th>URI / Pattern</th><th>Data</th><th>File</th><th>Module</th>"
+            t += "</tr></thead><tbody>"
+            for e in entries {
+                let uri = !e.port.isEmpty && !e.uri.contains(e.port) ? "\(e.uri):\(e.port)" : e.uri
+                let data = e.dataFmt.isEmpty ? "—" : esc(e.dataFmt)
+                let mod  = e.module.isEmpty ? "root" : esc(e.module)
+                let fname = URL(fileURLWithPath: e.filePath).lastPathComponent
+                let link = vsLink(path: e.filePath, label: esc(fname), line: e.line > 0 ? e.line : nil)
+                t += "<tr><td>\(trafficProtoTag(e.proto))</td><td class=\"mono\">\(esc(uri))</td>"
+                t += "<td class=\"mono\">\(data)</td><td class=\"mono\">\(link)</td><td class=\"mono\">\(mod)</td></tr>"
+            }
+            t += "</tbody></table></div>"
+        }
+        t += "</div>"
+        return t
+    }
+
+    private func trafficProtoTag(_ proto: String) -> String {
+        let (bg, fg) = trafficProtoColors(proto)
+        return "<span class=\"tag\" style=\"background:\(bg);color:\(fg);font-size:11px\">\(esc(proto))</span>"
+    }
+
+    private func trafficProtoColors(_ proto: String) -> (String, String) {
+        switch proto {
+        case "REST":      return ("#27ae60", "#fff")
+        case "gRPC":      return ("#2980b9", "#fff")
+        case "WebSocket": return ("#e67e22", "#fff")
+        case "GraphQL":   return ("#8e44ad", "#fff")
+        default:          return ("#7f8c8d", "#fff")
+        }
     }
 
     private func formatFileSize(_ bytes: Int) -> String {
