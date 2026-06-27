@@ -54,6 +54,7 @@ enum AnalysisPipeline {
         let parsedFiles: [ParsedFile]
         let enrichedFiles: [ParsedFile]
         let branchName: String
+        let headCommit: String
         let authorStats: [String: AuthorStats]
         let metadata: ProjectMetadata
         let monkeyPatchedLibs: [MonkeyPatchedLibs.DetectedLib]
@@ -145,6 +146,7 @@ enum AnalysisPipeline {
         let repoAbsPath = URL(fileURLWithPath: path).standardizedFileURL.path
         let gitAnalyzer = GitAnalyzer(repoPath: repoAbsPath, commitLimit: config.gitCommitLimit)
         let branchName = gitAnalyzer.currentBranch()
+        let headCommit = gitAnalyzer.headCommitHash()
         let globalAuthorStats = gitAnalyzer.authorStats()
         let (enrichedFiles, authorFileCounts, churnFiles) = gitAnalyzer.analyze(files: parsedFiles)
         let gitBranchStats = gitAnalyzer.branchStats()
@@ -173,7 +175,7 @@ enum AnalysisPipeline {
 
         return Result(
             graph: graph, parsedFiles: parsedFiles, enrichedFiles: enrichedFiles,
-            branchName: branchName, authorStats: mergedStats, metadata: metadata,
+            branchName: branchName, headCommit: headCommit, authorStats: mergedStats, metadata: metadata,
             monkeyPatchedLibs: monkeyLibs,
             branchStats: gitBranchStats, semanticStats: gitSemanticStats, churnFiles: churnFiles
         )

@@ -31,6 +31,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip Packages & Modules section (faster for large codebases)")
     var skipModules: Bool = false
 
+    @Option(name: .long, help: "GitHub repository URL to enable link toggling (e.g. https://github.com/owner/repo)")
+    var githubLinks: String = ""
+
     func run() async throws {
         print("\(ts()) 🚀 Starting ArchSwiftScope analysis for: \(path)")
 
@@ -132,7 +135,9 @@ struct AnalyzeCommand: AsyncParsableCommand {
             apResults: apResults,
             oopStats: oopStats,
             securityScore: securityScore,
-            skipModules: skipModules
+            skipModules: skipModules,
+            githubURL: githubLinks,
+            headCommit: result.headCommit
         )
         let reportURL = URL(fileURLWithPath: reportPath).standardizedFileURL
         print("\(ts()) ✅ Report: \(reportURL.path) · \(stageTime(CFAbsoluteTimeGetCurrent() - reportT0))")

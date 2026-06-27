@@ -125,6 +125,11 @@ struct GitAnalyzer {
         return output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
     }
 
+    func headCommitHash() -> String {
+        let output = git(["rev-parse", "HEAD"])
+        return output?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
     /// Global author stats. Commit/date info from one git log call; LOC from a second --numstat pass.
     func authorStats() -> [String: AuthorStats] {
         guard let output = git(["log", "--pretty=format:%ae\t%an\t%at", "-\(commitLimit)"]) else { return [:] }

@@ -175,7 +175,29 @@ codecontext analyze ~/Projects/MyApp --no-cache --verbose --open
 
 # Skip the Packages & Modules section (faster for large codebases)
 codecontext analyze ~/Projects/MyApp --skip-modules --open
+
+# Enable GitHub link toggling in the report
+codecontext analyze ~/Projects/MyApp --github-links https://github.com/owner/repo --open
 ```
+
+### `--github-links`
+
+Pass the root URL of your GitHub repository to unlock a **VS Code / GitHub** toggle in the report's Links card.
+
+```bash
+codecontext analyze ~/Projects/MyApp \
+  --github-links https://github.com/owner/MyApp \
+  --open
+```
+
+When GitHub mode is active every file link in the report opens the corresponding file directly on GitHub (at the correct line) instead of in VS Code. The selected mode persists across page reloads via `localStorage`.
+
+| Mode | Link format |
+| --- | --- |
+| **VS Code** (default) | `vscode://file//abs/path/to/File.swift:42` |
+| **GitHub** | `https://github.com/owner/repo/blob/main/relative/path/File.swift#L42` |
+
+The branch name is taken from the current `git` branch at analysis time. No GitHub authentication is required — links point to the public (or private, if you're signed in) repository URL you supply.
 
 ### View Codebase Evolution
 

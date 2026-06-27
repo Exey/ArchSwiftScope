@@ -227,7 +227,9 @@ struct ReportGenerator {
         apResults: [APResult] = [],
         oopStats: OOPvsPOPStats? = nil,
         securityScore: SecurityScore? = nil,
-        skipModules: Bool = false
+        skipModules: Bool = false,
+        githubURL: String = "",
+        headCommit: String = ""
     ) throws {
         // Filter out monkey-patched library files
         let mpLibPaths = monkeyPatchedLibs.map(\.path)
@@ -405,8 +407,18 @@ struct ReportGenerator {
         }()
 
         // Architecture PATTERN — detect from file/declaration naming conventions
+        // Exclude build-system infrastructure (bazel rules, BSP servers, etc.) — not app logic
+        let buildSystemComponents: [String] = [
+            "/build-system/", "/bazel-rules/", "/rules_apple/", "/rules_swift/",
+            "/rules_xcodeproj/", "/apple_support/", "/bazel-", "/.build/",
+        ]
+        let isBuildSystem: (String) -> Bool = { path in
+            buildSystemComponents.contains { path.contains($0) }
+                || URL(fileURLWithPath: path).pathComponents.contains { $0.hasPrefix("rules_") }
+        }
+        let archFiles = projectFiles.filter { !isBuildSystem($0.filePath) }
         print("\(ts())  Detecting architecture pattern...")
-        let archDetection = archAnalyzer.detectPattern(files: projectFiles)
+        let archDetection = archAnalyzer.detectPattern(files: archFiles)
         if let top = archDetection.top {
             let alts = archDetection.patterns.dropFirst().map { "\($0.name) \(Int($0.confidence * 100))%" }.joined(separator: ", ")
             let altStr = alts.isEmpty ? "" : "  (also: \(alts))"
@@ -433,7 +445,7 @@ struct ReportGenerator {
                     guard !paths.isEmpty else { return "" }
                     let links = paths.map { path -> String in
                         let fname = URL(fileURLWithPath: path).lastPathComponent
-                        return "<a href='vscode://file/\(path)'>\(esc(fname))</a>"
+                        return vsLink(path: path, label: esc(fname))
                     }
                     return "<div class='arch-letter-link'>\(links.joined(separator: " "))</div>"
                 }()
@@ -523,7 +535,7 @@ struct ReportGenerator {
 
         // Design Patterns
         print("\(ts())  Detecting design patterns...")
-        let detectedPatterns = DesignPatternDetector().detect(files: projectFiles)
+        let detectedPatterns = DesignPatternDetector().detect(files: archFiles)
         let designPatternsSubCardHTML: String = {
             guard !detectedPatterns.isEmpty else { return "" }
             let byCategory = Dictionary(grouping: detectedPatterns, by: \.category)
@@ -1772,7 +1784,7 @@ struct ReportGenerator {
                     return "<div class=\"summary-grid\">\(cards)</div>"
                 }())
             </div>
-            \(buildVSCodeLinksCard(repoPath: repoPath))
+            \(buildVSCodeLinksCard(repoPath: repoPath, githubURL: githubURL, branchName: branchName, headCommit: headCommit))
             <div class="card">
                 \(architectureCardHTML)
             </div>
@@ -2159,28 +2171,87 @@ struct ReportGenerator {
 
     private func vsLink(path: String, label: String, line: Int? = nil) -> String {
         let href = line.map { "vscode://file/\(path):\($0)" } ?? "vscode://file/\(path)"
-        return "<a href=\"\(href)\" class=\"vs-link\" title=\"Open in VS Code\">\(label)</a>"
+        let lineAttr = line.map { " data-line=\"\($0)\"" } ?? ""
+        return "<a href=\"\(href)\" class=\"vs-link\" data-path=\"\(path)\"\(lineAttr) title=\"Open in VS Code\">\(label)</a>"
     }
 
     // MARK: - VS Code Links Card
 
-    private func buildVSCodeLinksCard(repoPath: String) -> String {
+    private func buildVSCodeLinksCard(repoPath: String, githubURL: String = "", branchName: String = "main", headCommit: String = "") -> String {
         guard !repoPath.isEmpty else { return "" }
         let safePath = esc(repoPath)
+        let safeGithub = esc(githubURL.trimmingCharacters(in: .init(charactersIn: "/")))
+        let safeBranch = esc(branchName)
+        let safeCommit = headCommit.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blobRef = safeCommit.isEmpty ? safeBranch : safeCommit
+        let hasGithub = !githubURL.isEmpty
+        let githubToggle = hasGithub ? """
+            <div class="pill-seg" style="margin-left:auto">
+                <button class="seg-btn active" id="btn-link-vscode">VS Code</button>
+                <button class="seg-btn" id="btn-link-github">GitHub</button>
+            </div>
+        """ : ""
         return """
         <div class="card" id="vs-links-card" style="padding:14px 28px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
                 <span style="font-size:18px">🔗</span>
-                <h3 style="margin:0;font-size:15px;font-weight:600;color:var(--text)">VS Code Links</h3>
+                <h3 style="margin:0;font-size:15px;font-weight:600;color:var(--text)">Links</h3>
+                \(githubToggle)
             </div>
-            <p style="font-size:13px;color:var(--text3);margin:0 0 10px">Edit the path prefix for <code style="font-family:'SF Mono',Menlo,monospace;font-size:12px">vscode://</code> links — useful when sharing this report with someone whose project is at a different location.</p>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <input id="vs-path-input" type="text" value="\(safePath)" data-orig="\(safePath)"
-                    style="flex:1;min-width:200px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'SF Mono',Menlo,monospace;font-size:12px;outline:none">
-                <button id="vs-path-btn" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap">Change Path</button>
-                <span id="vs-path-msg" style="font-size:12px;color:var(--text3)"></span>
+            <div id="vs-path-row">
+                <p style="font-size:13px;color:var(--text3);margin:0 0 10px">Edit the path prefix for <code style="font-family:'SF Mono',Menlo,monospace;font-size:12px">vscode://</code> links — useful when sharing this report with someone whose project is at a different location.</p>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <input id="vs-path-input" type="text" value="\(safePath)" data-orig="\(safePath)"
+                        style="flex:1;min-width:200px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'SF Mono',Menlo,monospace;font-size:12px;outline:none">
+                    <button id="vs-path-btn" style="padding:6px 14px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap">Change Path</button>
+                    <span id="vs-path-msg" style="font-size:12px;color:var(--text3)"></span>
+                </div>
             </div>
+            \(hasGithub ? "<div id=\"vs-github-row\" style=\"display:none\"><p style=\"font-size:13px;color:var(--text3);margin:0\">Links open files on <a href=\"\(safeGithub)\" target=\"_blank\" style=\"color:var(--accent)\">\(safeGithub)</a> at <code style=\"font-family:'SF Mono',Menlo,monospace;font-size:12px\">\(blobRef.count == 40 ? String(blobRef.prefix(7)) : blobRef)</code>.</p></div>" : "")
         </div>
+        <script>
+        (function(){
+            var REPO_PATH  = '\(safePath)';
+            var GITHUB_URL = '\(safeGithub)';
+            var BLOB_REF   = '\(blobRef)';
+            function setLinkMode(mode) {
+                document.querySelectorAll('a.vs-link').forEach(function(a) {
+                    var path = a.dataset.path || '';
+                    var line = a.dataset.line || '';
+                    if (mode === 'github' && GITHUB_URL) {
+                        var rel = path.startsWith(REPO_PATH) ? path.slice(REPO_PATH.length).replace(/^\\//, '') : path;
+                        var url = GITHUB_URL + '/blob/' + BLOB_REF + '/' + rel;
+                        if (line) url += '#L' + line;
+                        a.href = url;
+                        a.setAttribute('target', '_blank');
+                        a.title = 'Open on GitHub';
+                    } else {
+                        a.href = 'vscode://file' + path + (line ? ':' + line : '');
+                        a.removeAttribute('target');
+                        a.title = 'Open in VS Code';
+                    }
+                });
+                var pr = document.getElementById('vs-path-row');
+                var gr = document.getElementById('vs-github-row');
+                var bvs = document.getElementById('btn-link-vscode');
+                var bgh = document.getElementById('btn-link-github');
+                if (pr)  pr.style.display  = mode === 'github' ? 'none' : '';
+                if (gr)  gr.style.display  = mode === 'github' ? '' : 'none';
+                if (bvs) bvs.classList.toggle('active', mode !== 'github');
+                if (bgh) bgh.classList.toggle('active', mode === 'github');
+                localStorage.setItem('archswift-linkmode', mode);
+            }
+            // Defer until all vs-link elements exist in the DOM
+            document.addEventListener('DOMContentLoaded', function() {
+                var saved = \(hasGithub ? "localStorage.getItem('archswift-linkmode') || 'github'" : "'vscode'");
+                setLinkMode(saved);
+                var bvs = document.getElementById('btn-link-vscode');
+                var bgh = document.getElementById('btn-link-github');
+                if (bvs) bvs.addEventListener('click', function(){ setLinkMode('vscode'); });
+                if (bgh) bgh.addEventListener('click', function(){ setLinkMode('github'); });
+            });
+        })();
+        </script>
         """
     }
 
