@@ -1723,38 +1723,54 @@ struct ReportGenerator {
             <div class="card">
                 <h1>🔬 ArchSwiftScope 📋 \(esc(projectName.isEmpty ? "Project" : projectName))</h1>
                 <p class="subtitle">Generated \(Date().formatted()) · <span class="branch-badge">\(esc(branchName))</span> branch</p>
-                <div class="summary-grid">
-                    \(!metadata.swiftVersion.isEmpty ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:20px\">Swift \(esc(metadata.swiftVersion))</div><div class=\"label\">Language</div></div>" : "")
-                    \(!metadata.deploymentTargets.isEmpty ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:16px\">\(esc(metadata.deploymentTargets.joined(separator: ", ")))</div><div class=\"label\">Min Deployment</div></div>" : "")
-                    \(!metadata.appVersion.isEmpty ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:20px\">\(esc(metadata.appVersion))</div><div class=\"label\">App Version</div></div>" : "")
-                    \(metadata.assets.totalSizeBytes > 0 ? "<div class=\"summary-card\"><div class=\"num\" style=\"font-size:18px\">\(metadata.assets.allFiles.count) <span style=\"font-size:14px;font-weight:400;color:var(--text3)\">(\(String(format: "%.1f", Double(metadata.assets.totalSizeBytes) / 1_048_576.0)) MB)</span></div><div class=\"label\">Assets</div></div>" : "")
-                    \({
-                        let swiftCount = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
-                        let objcCount = projectFiles.count - swiftCount
-                        if objcCount > 0 {
-                            let swiftLines = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.reduce(0) { $0 + $1.lineCount }
-                            let pct = totalLines > 0 ? Int(round(Double(swiftLines) / Double(totalLines) * 100)) : 0
-                            return """
-                            <div class="summary-card"><div class="num">\(swiftCount)</div><div class="label">Swift Files</div></div>
-                            <div class="summary-card"><div class="num">\(objcCount)</div><div class="label">ObjC Files</div></div>
-                            <div class="summary-card"><div class="num" style="font-size:20px">\(pct)%</div><div class="label">Swift Code</div></div>
-                            """
-                        } else {
-                            return "<div class=\"summary-card\"><div class=\"num\">\(swiftCount)</div><div class=\"label\">Swift Files</div></div>"
-                        }
-                    }())
-                    <div class="summary-card"><div class="num">\(totalLines.formatted())</div><div class="label">Lines of Code</div></div>
-                    <div class="summary-card"><div class="num">\(totalDecls)</div><div class="label">Declarations</div></div>
-                    <div class="summary-card"><div class="num">\(totalExts)</div><div class="label">Extensions</div></div>
-                    <div class="summary-card"><div class="num">\(packages.count)</div><div class="label">Packages</div></div>
-                    \(!monkeyPatchedLibs.isEmpty ? "<div class=\"summary-card\"><div class=\"num\">\(monkeyPatchedLibs.count)</div><div class=\"label\">🐒 Vendored Libs</div></div>" : "")
-                    <div class="summary-card"><div class="num">\(totalStructs)</div><div class="label">🟢 Structs</div></div>
-                    <div class="summary-card"><div class="num">\(totalClasses)</div><div class="label">🔵 Classes</div></div>
-                    <div class="summary-card"><div class="num">\(totalEnums)</div><div class="label">🟡 Enums</div></div>
-                    <div class="summary-card"><div class="num">\(totalProtocols)</div><div class="label">🟣 Protocols</div></div>
-                    <div class="summary-card"><div class="num">\(totalActors)</div><div class="label">🔴 Actors</div></div>
-                    \(metadata.metalFiles.count > 0 ? "<div class=\"summary-card\"><div class=\"num\">\(metadata.metalFiles.count)</div><div class=\"label\">🔘 Metal</div></div>" : "")
-                </div>
+                \({
+                    let swiftCount = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.count
+                    let objcCount  = projectFiles.count - swiftCount
+                    let swiftLines = projectFiles.filter { $0.filePath.hasSuffix(".swift") }.reduce(0) { $0 + $1.lineCount }
+                    let pct = totalLines > 0 ? Int(round(Double(swiftLines) / Double(totalLines) * 100)) : 100
+                    let assetsMB = String(format: "%.1f", Double(metadata.assets.totalSizeBytes) / 1_048_576.0)
+                    func sc(_ num: String, _ label: String, _ fs: String = "") -> String {
+                        let style = fs.isEmpty ? "" : " style=\"font-size:\(fs)\""
+                        return "<div class=\"summary-card\"><div class=\"num\"\(style)>\(num)</div><div class=\"label\">\(label)</div></div>"
+                    }
+                    var cards = ""
+                    // 1. Language
+                    if !metadata.swiftVersion.isEmpty { cards += sc("Swift \(esc(metadata.swiftVersion))", "Language", "20px") }
+                    // 2. Lines of Code
+                    cards += sc(totalLines.formatted(), "Lines of Code")
+                    // 3. Swift Code % (mixed) or Swift Files count (pure Swift)
+                    if objcCount > 0 {
+                        cards += sc("\(pct)%", "Swift Code", "20px")
+                    } else {
+                        cards += sc("\(swiftCount)", "Swift Files")
+                    }
+                    // 4–5. Deployment / version
+                    if !metadata.deploymentTargets.isEmpty { cards += sc(esc(metadata.deploymentTargets.joined(separator: ", ")), "Min Deployment", "16px") }
+                    if !metadata.appVersion.isEmpty { cards += sc(esc(metadata.appVersion), "App Version", "20px") }
+                    // 6–7. File counts (only in mixed Swift/ObjC projects)
+                    if objcCount > 0 {
+                        cards += sc("\(swiftCount)", "Swift Files")
+                        cards += sc("\(objcCount)", "ObjC Files")
+                    }
+                    // 8–10. Structure counts
+                    cards += sc("\(totalDecls)", "Declarations")
+                    cards += sc("\(totalExts)", "Extensions")
+                    cards += sc("\(packages.count)", "Packages")
+                    // 11. Vendored libs
+                    if !monkeyPatchedLibs.isEmpty { cards += sc("\(monkeyPatchedLibs.count)", "🐒 Vendored Libs") }
+                    // 12. Assets (after Vendored Libs)
+                    if metadata.assets.totalSizeBytes > 0 {
+                        cards += sc("\(metadata.assets.allFiles.count) <span style=\"font-size:14px;font-weight:400;color:var(--text3)\">(\(assetsMB) MB)</span>", "Assets", "18px")
+                    }
+                    // 13–18. Type breakdown
+                    cards += sc("\(totalStructs)", "🟢 Structs")
+                    cards += sc("\(totalClasses)", "🔵 Classes")
+                    cards += sc("\(totalEnums)", "🟡 Enums")
+                    cards += sc("\(totalProtocols)", "🟣 Protocols")
+                    cards += sc("\(totalActors)", "🔴 Actors")
+                    if metadata.metalFiles.count > 0 { cards += sc("\(metadata.metalFiles.count)", "🔘 Metal") }
+                    return "<div class=\"summary-grid\">\(cards)</div>"
+                }())
             </div>
             \(buildVSCodeLinksCard(repoPath: repoPath))
             <div class="card">
@@ -2247,6 +2263,7 @@ struct ReportGenerator {
             "spectre", "customdump", "appcenter", "appcentercrashe", "appcentercrashs",
             "fabkitprotocol", "boost", "lldb",
             "assertmacros", "languageserverprotocoltransport",
+            "testingutils",
         ]
         if dev.contains(base) { return "Dev Tools" }
         if base.hasPrefix("bazel") || (base.contains("syntax") && base.contains("swift")) { return "Dev Tools" }
@@ -2273,6 +2290,12 @@ struct ReportGenerator {
             "opengl", "opengles", "avrouting", "videotoolbox",
             "media", "thorvg", "gif_lib", "webp", "mozjpeg", "metal_stdlib",
             "ecore", "evas", "efl",
+            // UI components / video capture / codec interfaces (Telegram-style vendored)
+            "buttonsshared", "buttonsshared2", "uikitruntimeutils",
+            "videocaptureinterface", "videocaptureinterfaceimpl",
+            "calayer", "cgpath",
+            "codec_api", "codec_app_def", "codec_def",
+            "fakeaudiodevicemodule",
         ]
         if ui.contains(base) { return "UI/Media" }
         // Media codec libs (libavcodec, libavformat, libyuv, libswresample, …)
