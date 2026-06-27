@@ -138,7 +138,7 @@ final class ObjCParser: LanguageParser, @unchecked Sendable {
             description: "", lineCount: content.components(separatedBy: "\n").count,
             declarations: declarations, packageName: packageName,
             buildSystem: buildSystem,
-            todoCount: 0, fixmeCount: 0, longestFunction: nil
+            todoCount: 0, fixmeCount: 0, longestFunction: nil, biggestType: nil
         )
     }
 }

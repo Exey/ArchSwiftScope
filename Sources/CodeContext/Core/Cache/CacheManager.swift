@@ -7,6 +7,9 @@ import CryptoKit
 /// Thread-safe file parse cache using Swift actor isolation.
 /// Stores parsed file JSON in .codecontext/cache/ directory.
 actor CacheManager {
+    // Bump when ParsedFile schema changes to auto-invalidate stale cache entries.
+    private static let schemaVersion = "v2"
+
     private let cacheDir: URL
 
     init(cacheDir: URL = URL(fileURLWithPath: ".codecontext/cache")) {
@@ -74,7 +77,7 @@ actor CacheManager {
         let mod = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         let size = (attrs?[.size] as? UInt64) ?? 0
 
-        let metadata = "\(path):\(mod):\(size)"
+        let metadata = "\(path):\(mod):\(size):\(Self.schemaVersion)"
         let digest = Insecure.MD5.hash(data: Data(metadata.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }

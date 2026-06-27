@@ -35,7 +35,7 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
     func parse(file: URL) throws -> ParsedFile {
         let data = try Data(contentsOf: file)
         guard let content = String(data: data, encoding: .utf8) else {
-            return ParsedFile(filePath: file.path, moduleName: "", imports: [], description: "", lineCount: 0, declarations: [], packageName: "", buildSystem: .unknown, todoCount: 0, fixmeCount: 0, longestFunction: nil)
+            return ParsedFile(filePath: file.path, moduleName: "", imports: [], description: "", lineCount: 0, declarations: [], packageName: "", buildSystem: .unknown, todoCount: 0, fixmeCount: 0, longestFunction: nil, biggestType: nil)
         }
 
         var imports: [String] = []
@@ -52,6 +52,14 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
         var funcStartLine = 0
         var braceDepth = 0
         var inFunc = false
+
+        // Biggest type tracking (class/struct/enum/protocol/actor, not extension)
+        var bestType: TypeInfo?
+        var curTypeName: String?
+        var curTypeKind: Declaration.Kind = .struct
+        var typeStartLine = 0
+        var typeBodyDepth = 0
+        var inType = false
 
         // Scope depth for filtering nested declarations (enum CodingKeys inside extensions, etc.)
         var scopeDepth = 0
@@ -109,6 +117,14 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
                         if description.isEmpty && !docLines.isEmpty {
                             description = docLines.joined(separator: " ")
                         }
+                        // Start tracking this type's span (skip extensions)
+                        if !inType && kind != .extension {
+                            curTypeName = name
+                            curTypeKind = kind
+                            typeStartLine = lineCount
+                            inType = true
+                            typeBodyDepth = 0
+                        }
                     }
                     break
                 }
@@ -156,6 +172,22 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
                 }
             }
 
+            if inType {
+                for ch in trimmed {
+                    if ch == "{" { typeBodyDepth += 1 }
+                    if ch == "}" { typeBodyDepth -= 1 }
+                }
+                if typeBodyDepth <= 0 && trimmed.contains("}") {
+                    let length = lineCount - typeStartLine + 1
+                    if let name = curTypeName, length > (bestType?.lineCount ?? 0) {
+                        bestType = TypeInfo(name: name, kind: curTypeKind, lineCount: length, filePath: file.path, startLine: typeStartLine)
+                    }
+                    inType = false
+                    curTypeName = nil
+                    typeBodyDepth = 0
+                }
+            }
+
             // Doc comments
             if trimmed.hasPrefix("///") {
                 let doc = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
@@ -187,7 +219,8 @@ final class SwiftParser: LanguageParser, @unchecked Sendable {
             declarations: declarations, packageName: packageName,
             buildSystem: buildSystem,
             todoCount: todoCount, fixmeCount: fixmeCount,
-            longestFunction: bestFunc
+            longestFunction: bestFunc,
+            biggestType: bestType
         )
     }
 

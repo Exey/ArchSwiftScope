@@ -1242,6 +1242,10 @@ struct ReportGenerator {
         let allFunctions = projectFiles.compactMap(\.longestFunction)
         let topLongestFuncs = allFunctions.sorted { $0.lineCount > $1.lineCount }.prefix(20)
 
+        // Biggest named types (class/struct/enum/protocol/actor) across all files
+        let allBigTypes = archFiles.compactMap(\.biggestType)
+        let topBigTypes = allBigTypes.sorted { $0.lineCount > $1.lineCount }.prefix(20)
+
         print("\(ts())  Writing HTML...")
 
         // ─── Markdown Report (embedded in HTML for MD toggle) ───
@@ -1835,6 +1839,29 @@ struct ReportGenerator {
                         let pkg = fileMap[fn.filePath]?.packageName.isEmpty == false ? fileMap[fn.filePath]!.packageName : "App"
                         let anchor = pkg.replacingOccurrences(of: " ", with: "-")
                         return "<tr><td><code>\(vsLink(path: fn.filePath, label: esc(fn.name) + "()", line: fn.startLine))</code></td><td class='mono'>\(fn.lineCount)</td><td>\(vsLink(path: fn.filePath, label: esc(fileName), line: fn.startLine))</td><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(pkg))</a></td></tr>"
+                    }.joined(separator: "\n"))</tbody>
+                </table></div>
+            </div>
+            """ : "")
+            \(!topBigTypes.isEmpty ? """
+            <div class="card">
+                <h2>📐 Biggest Named Types</h2>
+                <div class="table-wrap"><table class="file-table">
+                    <thead><tr><th>Type</th><th>Kind</th><th>Lines</th><th>File</th><th>Module</th></tr></thead>
+                    <tbody>\(topBigTypes.map { t -> String in
+                        let fileName = URL(fileURLWithPath: t.filePath).lastPathComponent
+                        let pkg = fileMap[t.filePath]?.packageName.isEmpty == false ? fileMap[t.filePath]!.packageName : "App"
+                        let anchor = pkg.replacingOccurrences(of: " ", with: "-")
+                        let kindLabel: String
+                        switch t.kind {
+                        case .class:    kindLabel = "<span class='tag tag-oop' style='font-size:11px;padding:2px 6px'>class</span>"
+                        case .struct:   kindLabel = "<span class='tag tag-pop' style='font-size:11px;padding:2px 6px'>struct</span>"
+                        case .enum:     kindLabel = "<span class='tag tag-mixed' style='font-size:11px;padding:2px 6px'>enum</span>"
+                        case .protocol: kindLabel = "<span class='tag tag-local' style='font-size:11px;padding:2px 6px'>protocol</span>"
+                        case .actor:    kindLabel = "<span class='tag tag-private' style='font-size:11px;padding:2px 6px'>actor</span>"
+                        case .extension: kindLabel = ""
+                        }
+                        return "<tr><td><code>\(vsLink(path: t.filePath, label: esc(t.name), line: t.startLine))</code></td><td>\(kindLabel)</td><td class='mono'>\(t.lineCount)</td><td>\(vsLink(path: t.filePath, label: esc(fileName), line: t.startLine))</td><td><a href='#pkg-\(anchor)' class='pkg-link-inline'>\(esc(pkg))</a></td></tr>"
                     }.joined(separator: "\n"))</tbody>
                 </table></div>
             </div>

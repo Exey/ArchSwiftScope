@@ -47,6 +47,16 @@ struct FunctionInfo: Codable, Sendable {
     let startLine: Int
 }
 
+// MARK: - Type Info
+
+struct TypeInfo: Codable, Sendable {
+    let name: String
+    let kind: Declaration.Kind
+    let lineCount: Int
+    let filePath: String
+    let startLine: Int
+}
+
 // MARK: - Parsed File
 
 struct ParsedFile: Codable, Sendable {
@@ -70,6 +80,8 @@ struct ParsedFile: Codable, Sendable {
     let fixmeCount: Int
     /// Longest function in this file
     let longestFunction: FunctionInfo?
+    /// Biggest named type (class/struct/enum/protocol/actor) in this file
+    let biggestType: TypeInfo?
 
     var fileName: String {
         URL(fileURLWithPath: filePath).lastPathComponent
