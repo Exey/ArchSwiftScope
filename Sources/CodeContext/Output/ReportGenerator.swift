@@ -2174,7 +2174,7 @@ struct ReportGenerator {
         guard !frameworks.isEmpty else { return "" }
         let categories: [(icon: String, name: String)] = [
             ("📱", "UI/Media"),
-            ("🗄️", "Data/Persistence"),
+            ("🗄️", "Data/Networking"),
             ("⚙️", "Architecture/System"),
             ("🔧", "Dev Tools"),
         ]
@@ -2220,7 +2220,7 @@ struct ReportGenerator {
             "staticthreads", "swiftapi", "instance", "instanceimpl",
             "usernotifications", "pushkit", "dispatch",
             // Apple system / logic frameworks
-            "foundation", "cocoa", "intents", "translation", "coretelephony",
+            "foundation", "cocoa", "intents", "translation",
             "accelerate", "naturallanguage",
             // Native system / C++ libs
             "darwin", "glibc", "ucrt", "shellapi",
@@ -2259,18 +2259,18 @@ struct ReportGenerator {
             "callkit", "clockkit",
             "coregraphics", "coreimage", "coremedia", "coretext", "corevideo",
             "coreanimation", "corehaptics", "coremotion", "sensorkit",
-            "eventkit", "eventkitui", "glkit", "iosurface", "linkpresentation",
+            "eventkitui", "glkit", "iosurface", "linkpresentation",
             "mediaplayer", "messageui", "messages",
             "metalperformanceshaders", "metalkit", "metal",
             "pdfkit", "passkit", "quartzcore", "quicklook", "replaykit",
-            "safariservices", "speech", "usernotificationsui", "visionkit",
+            "speech", "usernotificationsui", "visionkit",
             "asyncdisplaykit", "sdwebimage", "kingfisher", "nuke",
             "arkit", "realitykit", "scenekit", "spritekit", "gamekit", "gameplaykit",
             "mapkit", "corelocation", "corelocationui",
             "photos", "photosui", "vision",
             "widgetkit", "appintents",
             "tguikit", "fxpagecontrol", "componentflow", "display",
-            "opengl", "openglles", "avrouting", "videotoolbox",
+            "opengl", "opengles", "avrouting", "videotoolbox",
             "media", "thorvg", "gif_lib", "webp", "mozjpeg", "metal_stdlib",
             "ecore", "evas", "efl",
         ]
@@ -2278,11 +2278,11 @@ struct ReportGenerator {
         // Media codec libs (libavcodec, libavformat, libyuv, libswresample, …)
         if base.hasPrefix("lib") || base.hasPrefix("ecore") || base.hasPrefix("evas") { return "UI/Media" }
 
-        // Data / Persistence — storage, networking, serialisation, contacts
+        // Data / Networking — storage, networking, serialisation, contacts
         // addressbook is contact data, not UI
-        if base == "addressbook" || base == "addressbookui" { return "Data/Persistence" }
+        if base == "addressbook" || base == "addressbookui" { return "Data/Networking" }
 
-        return "Data/Persistence"
+        return "Data/Networking"
     }
 
     // MARK: - Traffic Card
