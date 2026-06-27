@@ -44,18 +44,19 @@ swift build -c release
 
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_graph.svg)
 
-3. **🛜 Traffic** — inbound and outbound connection signals detected across all source files *(shown only when signals are present)*:
-   - **📥 Inbound** — Vapor/server-side Swift route definitions (`app.get`, `routes.post`, …) and TCP server declarations (`NWListener`)
-   - **📤 Outbound** — HTTP/HTTPS/WebSocket URL string literals; TCP connections via `NWConnection` (Network.framework), `NWPathMonitor` (reachability), `SCNetworkReachabilityCreateWithName` (SystemConfiguration), BSD POSIX `socket(…SOCK_STREAM…)`, and `CFStreamCreatePairWithSocketToHost` (Core Foundation)
-   - Each entry shows a protocol tag (REST · WebSocket · gRPC · GraphQL · TCP), URI or detected pattern, data format (JSON / Protobuf / XML), and a clickable VS Code link to the source file and line
-
-4. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
+3. **🧬 OOP vs POP** — style signal across all Swift types, scored across three weighted categories:
    - **Protocol Design (55%)** — protocol density, constrained generics, conformance breadth (Impl-pattern detection), default implementations, `associatedtype` usage, `some`-with-user-protocols, and `A & B` composition
    - **Value Semantics (30%)** — struct-to-class ratio, `final` keyword usage, enums with associated values
    - **Anti-inheritance (15%)** — average inheritance depth, `override` density, NSObject subclass count
    - Overall POP score (0–100%) shown on a gradient bar; each metric scored 0–100% with POP / Mixed / OOP signal tags
 
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_oop.svg)
+
+4. **🛜 Traffic** — inbound and outbound connection signals detected across all source files *(shown only when signals are present)*:
+   - **📥 Inbound** — Vapor/server-side Swift route definitions (`app.get`, `routes.post`, …) and TCP server declarations (`NWListener`)
+   - **📤 Outbound** — HTTP/HTTPS/WebSocket URL string literals; TCP connections via `NWConnection` (Network.framework), `NWPathMonitor` (reachability), `SCNetworkReachabilityCreateWithName` (SystemConfiguration), BSD POSIX `socket(…SOCK_STREAM…)`, and `CFStreamCreatePairWithSocketToHost` (Core Foundation)
+   - Each entry shows a protocol tag (REST · WebSocket · gRPC · GraphQL · TCP), URI or detected pattern, data format (JSON / Protobuf / XML), and a clickable VS Code link to the source file and line
+
 
 4.🚨 **Security Risks** - (60 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
