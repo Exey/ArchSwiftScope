@@ -2354,7 +2354,7 @@ struct ReportGenerator {
             "swiftcompilerplugin", "languageserverprotocol", "buildserverprotocol", "symbolkit",
             "packagedescription", "xcodeproj", "xcodegen", "tuist", "pbxproj", "xcscheme",
             "bazelrunfiles", "bazeltestobservation",
-            "oslog", "pulse", "swiftlog", "cocoalumberjack",
+            "oslog", "pulse", "swiftlog", "cocoalumberjack", "ddlog",
             "cryptokit", "jwtkit", "commoncrypto",
             "endpointsecurity", "coreservices", "mobilecoreservices",
             "pathkit", "rainbow", "swiftcli", "swiftcmodule",
@@ -2391,7 +2391,7 @@ struct ReportGenerator {
             // UI components / video capture / codec interfaces (Telegram-style vendored)
             "buttonsshared", "buttonsshared2", "uikitruntimeutils",
             "videocaptureinterface", "videocaptureinterfaceimpl",
-            "calayer", "cgpath",
+            "calayer", "cgpath", "orientationmodule", "qrcodegenerator",
             "codec_api", "codec_app_def", "codec_def",
             "fakeaudiodevicemodule",
         ]
@@ -2782,7 +2782,7 @@ struct ReportGenerator {
         let genericFuncVal = "\(s.genericFuncCount) in \(s.totalClasses + s.totalStructs) types"
         let breadthVal     = "\(s.multiConformerProtocols) broad · \(s.singleConformerProtocols) single-impl · \(s.totalProtocols - s.multiConformerProtocols - s.singleConformerProtocols) untracked"
         let conformDist    = "0: \(s.typesWithZeroConformances) · 1: \(s.typesWithOneConformance) · 2+: \(s.typesWithTwoPlusConformances)"
-        let protoHeader    = noProto ? "Protocol Design · 55% weight  (M1 only — no protocols defined)" : "Protocol Design · 55% weight"
+        let protoHeader    = noProto ? "Protocol Design · (M1 only — no protocols defined)" : "Protocol Design"
 
         let someUserVal    = "\(s.someUserDefinedCount) usages of user-defined protocols"
         let protoCompVal   = "\(s.protocolCompositionCount) usages"
@@ -2812,7 +2812,7 @@ struct ReportGenerator {
         ]
 
         let tbody = (protoRows + [
-            sectionHeader("Value Semantics · 30% weight"),
+            sectionHeader("Value Semantics"),
             row(8,  "Struct vs Class ratio",
                 "\(s.totalStructs) structs · \(s.totalClasses) classes",  s.s_structRatio),
             row(9,  "<code>final</code> keyword",
@@ -2822,7 +2822,7 @@ struct ReportGenerator {
             infoRow("↳ Extension count (informational)",
                     "\(s.extensionCount) extensions"),
 
-            sectionHeader("Anti-inheritance · 15% weight"),
+            sectionHeader("Anti-inheritance"),
             row(11, "Inheritance depth",
                 "avg \(String(format:"%.1f", s.avgInheritanceDepth)) · max \(s.maxInheritanceDepth) · \(s.deepInheritanceCount) deep ≥ 3",
                 s.s_inheritDepth, "↓ lower = POP"),
