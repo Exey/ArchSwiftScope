@@ -223,6 +223,7 @@ struct SecurityScore {
 
 struct SecurityAnalyzer {
     static let maxViolations = 100
+    static var checkCount: Int { allChecks().count }
 
     /// Runs all checks and streams each result via `onCheckComplete` as it finishes.
     /// Per-file checks stream immediately; project-only checks stream after the project-level pass.
@@ -950,7 +951,7 @@ private extension SecurityAnalyzer {
             // ── From archscope universal rules ─────────────────────────────
             APCheck(
                 name: "Service-Specific Secret Prefixes (AWS / GitHub / Stripe / Slack / Google)",
-                description: "Well-known service credential formats — AWS access keys (`AKIA…`/`ASIA…`), GitHub PATs (`ghp_`/`gho_`/`ghs_`/`github_pat_`), Stripe keys (`sk_live_`/`sk_test_`), Slack tokens (`xoxb-`/`xoxp-`), and Google API keys (`AIza…`) — are definitive indicators of a live credential committed to source. The prefix format alone is authoritative; no variable-name context is needed. Rotate immediately and load from a secret manager or CI/CD environment.",
+                description: "Well-known service credential formats — AWS access keys (`AKIA…`/`ASIA…`), GitHub PATs (`ghp_`/`gho_`/`ghs_`/`github_pat_`), Stripe keys (`sk_live_`/`sk_test_`), Slack tokens (`xoxb-`/`xoxp-`), Google API keys (`AIza…`), and Anthropic API keys (`sk-ant-…`) — are definitive indicators of a live credential committed to source. The prefix format alone is authoritative; no variable-name context is needed. Rotate immediately and load from a secret manager or CI/CD environment.",
                 priority: .high,
                 category: .insecureDataStorage,
                 detect: checkServiceSecretPrefixes
@@ -977,6 +978,31 @@ private extension SecurityAnalyzer {
                 detect: { _, _ in [] },
                 projectDetect: checkDotEnvCredentials,
                 isProjectOnly: true
+            ),
+
+            // ── I/O Validation — expanded ──────────────────────────────────
+            APCheck(
+                name: "File Race Condition (Non-Atomic Write / Unprotected createFile)",
+                description: "`Data.write(to:)` without `.atomic` option leaves a partial file visible if the process is interrupted — a TOCTOU race exploitable by a concurrent reader or writer. `FileManager.createFile(atPath:)` without `NSFileProtectionComplete` in the attributes dictionary stores the file without OS-level encryption. `FileHandle(forWritingAtPath:)` performs raw unbuffered writes with no atomicity or locking guarantees. Use `.atomicWrite`, supply `NSFileProtectionComplete`, and prefer `Data.write(to:options:.atomic)` for any file carrying sensitive data.",
+                priority: .medium,
+                category: .logicState,
+                detect: checkFileRaceCondition
+            ),
+            APCheck(
+                name: "Unescaped HTML String Injection (XSS Risk)",
+                description: "A string literal that opens an HTML tag and contains a `\\(…)` interpolation without passing the value through an HTML-escaping function is a stored or reflected XSS vector when the output is rendered in a `WKWebView` or sent to a browser. An attacker who controls the interpolated value can inject `<script>` tags or event handlers. Escape all user-controlled data with `htmlEscape(_:)` or equivalent before embedding in HTML.",
+                priority: .high,
+                category: .ioValidation,
+                detect: checkHTMLStringInjection
+            ),
+
+            // ── Insecure Data Storage — sensitive log exposure ─────────────
+            APCheck(
+                name: "os_log Public Format Specifier for Sensitive Value",
+                description: "In `os_log` and `Logger`, `%@` is a *public* format specifier: in release builds the value is visible in Console.app, system logs, and crash reports to any user on the device. Sensitive fields (passwords, tokens, keys, credentials) must use `%{private}@` so the OS automatically redacts them in non-development contexts. Never log secrets with the default public format.",
+                priority: .medium,
+                category: .insecureDataStorage,
+                detect: checkOsLogPublicSensitive
             ),
         ]
     }
@@ -1400,13 +1426,21 @@ private extension SecurityAnalyzer {
     }
 
     static func checkWeakCryptoConstants(_ filePath: String, _ lines: [String]) -> [APViolation] {
-        let weak = ["kCCAlgorithmDES", "kCCAlgorithm3DES", "kCCAlgorithmRC2",
-                    "kCCAlgorithmRC4", "kCCAlgorithmCAST"]
+        // CommonCrypto algorithm constants
+        let weakCC = ["kCCAlgorithmDES", "kCCAlgorithm3DES", "kCCAlgorithmRC2",
+                      "kCCAlgorithmRC4", "kCCAlgorithmCAST"]
+        // String-named cipher/hash algorithm references (TLS cipher suites, SecItem, OpenSSL wrappers)
+        let weakStr = ["SHA1withRSA", "SHA1withECDSA", "SHA-1", "MD2withRSA",
+                       "SSL_DES", "SSL_3DES", "kSSLCipherSuite3DES", "kSSLCipherSuiteDES",
+                       "CCAlgorithm.des", "CCAlgorithm.tripleDes", "CCAlgorithm.rc4",
+                       ".des ", ".tripleDes ", ".rc4 ",
+                       "TLS_RSA_WITH_3DES", "TLS_RSA_WITH_DES", "TLS_RSA_WITH_RC4"]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            if weak.contains(where: { code.contains($0) }) {
+            if weakCC.contains(where: { code.contains($0) }) ||
+               weakStr.contains(where: { line.contains($0) }) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -1517,14 +1551,27 @@ private extension SecurityAnalyzer {
         guard let re = try? NSRegularExpression(
             pattern: #"(?i)\b(iv|nonce|initialVector|initializationVector)\s*[=:]\s*[\[\"]"#
         ) else { return [] }
+        // Also catch: AES.GCM.Nonce(data: …) or .init(data:) fed from a literal Data or byte array,
+        // and static UInt8 arrays used as IVs
+        let byteArrayIV: NSRegularExpression? = try? NSRegularExpression(
+            pattern: #"(?i)\b(iv|nonce|initialVector)\s*[=:]\s*(Data\(bytes?\s*:|UInt8\]|Data\(\[)"#
+        )
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            let range = NSRange(code.startIndex..., in: code)
-            if re.firstMatch(in: code, range: range) != nil {
+            let codeRange = NSRange(code.startIndex..., in: code)
+            if re.firstMatch(in: code, range: codeRange) != nil {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
+                continue
+            }
+            if let byteRe = byteArrayIV {
+                let rawRange = NSRange(line.startIndex..., in: line)
+                if byteRe.firstMatch(in: line, range: rawRange) != nil {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { break }
+                }
             }
         }
         return out
@@ -1647,10 +1694,23 @@ private extension SecurityAnalyzer {
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
+            // Literal ".." in path strings
             if line.contains("\"../") || line.contains("\"..\\") ||
                (line.contains("appendingPathComponent(") && line.contains("\"..\"")) {
-                out.append(viol(filePath, i, lines))
-                if out.count >= maxViolations { break }
+                out.append(viol(filePath, i, lines)); if out.count >= maxViolations { break }; continue
+            }
+            // Dynamic path building: appendingPathComponent / appendingPathExtension
+            // with string interpolation — the component may contain ".." from user input
+            if (line.contains("appendingPathComponent(") || line.contains("appendingPathExtension("))
+                && line.contains("\\(") {
+                out.append(viol(filePath, i, lines)); if out.count >= maxViolations { break }; continue
+            }
+            // stringByResolvingSymlinksInPath / standardizedFileURL used as argument to file I/O
+            // (canonicalization gadget — must still validate against a known root after resolving)
+            let code = stripStrings(line)
+            if (code.contains("stringByResolvingSymlinksInPath") || code.contains("standardized"))
+                && (code.contains("contentsOfFile") || code.contains("createFile") || code.contains("removeItem") || code.contains("copyItem")) {
+                out.append(viol(filePath, i, lines)); if out.count >= maxViolations { break }
             }
         }
         return out
@@ -1659,13 +1719,27 @@ private extension SecurityAnalyzer {
     static func checkShellInjection(_ filePath: String, _ lines: [String]) -> [APViolation] {
         if isToolingPath(filePath) { return [] }
         if filePath.lowercased().contains("test") { return [] }
-        let patterns = ["/bin/sh", "/bin/bash", "/usr/bin/env",
-                        "Process()", "NSTask()", "popen("]
+        let shellEntryPoints = ["/bin/sh", "/bin/bash", "/usr/bin/env",
+                                "Process()", "NSTask()", "popen("]
         var out: [APViolation] = []
         for (i, line) in lines.enumerated() {
             if isComment(line) { continue }
             let code = stripStrings(line)
-            if patterns.contains(where: { code.contains($0) }) {
+            // Shell entry points
+            if shellEntryPoints.contains(where: { code.contains($0) }) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // Process arguments built with string interpolation: .arguments = ["...\(var)..."]
+            if (code.contains(".arguments") || code.contains("launchPath")) && line.contains("\\(") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // Shell metacharacters in argument lists: pipes, semicolons, backticks embedded
+            if code.contains(".arguments") &&
+               (line.contains("| ") || line.contains("; ") || line.contains("&&") || line.contains("`")) {
                 out.append(viol(filePath, i, lines))
                 if out.count >= maxViolations { break }
             }
@@ -2369,7 +2443,7 @@ private extension SecurityAnalyzer {
     // MARK: Universal — Service-specific secret prefixes (AWS / GitHub / Stripe / Slack / Google)
 
     private static let servicePrefixPattern: NSRegularExpression? = try? NSRegularExpression(
-        pattern: #"["'](AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{59}|sk_live_[0-9a-zA-Z]{24,}|sk_test_[0-9a-zA-Z]{24,}|xoxb-[0-9]{11}-[0-9A-Za-z\-]{24,}|xoxp-[0-9]+-[0-9]+-[0-9A-Za-z\-]+|AIza[0-9A-Za-z\-_]{35})["']"#
+        pattern: #"["'](AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{59}|sk_live_[0-9a-zA-Z]{24,}|sk_test_[0-9a-zA-Z]{24,}|xoxb-[0-9]{11}-[0-9A-Za-z\-]{24,}|xoxp-[0-9]+-[0-9]+-[0-9A-Za-z\-]+|AIza[0-9A-Za-z\-_]{35}|sk-ant-[A-Za-z0-9_\-]{20,})["']"#
     )
 
     static func checkServiceSecretPrefixes(_ filePath: String, _ lines: [String]) -> [APViolation] {
@@ -2470,6 +2544,90 @@ private extension SecurityAnalyzer {
                 if val.isEmpty || dotEnvSkipValues.contains(where: { val.lowercased().contains($0) }) { continue }
                 out.append(APViolation(file: rel, fullPath: url.path, line: i + 1, snippet: snippet(line)))
                 if out.count >= maxViolations { return out }
+            }
+        }
+        return out
+    }
+
+    // MARK: I/O Validation — File Race Condition (CWE-362)
+
+    static func checkFileRaceCondition(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let code = stripStrings(line)
+            // Data.write(to:) without .atomic — susceptible to TOCTOU / partial-write races
+            if code.contains(".write(to:") && !code.contains(".atomic") && !code.contains("options:") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+                continue
+            }
+            // FileManager.createFile without NSFileProtection attribute
+            if code.contains("createFile(atPath:") {
+                let window = lines[max(0, i - 4) ..< min(lines.count, i + 6)].joined(separator: " ")
+                if !window.lowercased().contains("protection") && !window.contains("NSFileProtect") {
+                    out.append(viol(filePath, i, lines))
+                    if out.count >= maxViolations { break }
+                    continue
+                }
+            }
+            // FileHandle.write without locking (no lock / seek / truncate guard nearby)
+            if code.contains("FileHandle(forWritingAtPath:") || code.contains("FileHandle(forUpdatingAtPath:") {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: I/O Validation — Unescaped HTML String Injection (CWE-79)
+
+    // Detects Swift files that build HTML strings with direct \(…) interpolation
+    // without passing values through an HTML-escaping function — XSS risk when
+    // the HTML is rendered in a WKWebView or sent to a browser.
+    private static let htmlTagPattern: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #""[^"]*<[a-zA-Z][a-zA-Z0-9]*[\s>/][^"]*\\("#
+    )
+    static func checkHTMLStringInjection(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        guard let tagRe = htmlTagPattern else { return [] }
+        let escapeMarkers = ["htmlEscape(", "esc(", "xmlEscape", "addingPercentEncoding",
+                             "replacingOccurrences(of: \"<\"", "sanitizeHTML", ".htmlEncoded",
+                             "CharacterSet.html", "HTMLEntities"]
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            guard line.contains("\\(") else { continue }
+            if escapeMarkers.contains(where: { line.contains($0) }) { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            if tagRe.firstMatch(in: line, range: range) != nil {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
+            }
+        }
+        return out
+    }
+
+    // MARK: Insecure Data Storage — os_log with public format for sensitive values (CWE-532)
+
+    // os_log uses %@ (public by default in release) vs %{private}@ — sensitive values
+    // logged with %@ are readable in Console.app and crash reports without redaction.
+    static func checkOsLogPublicSensitive(_ filePath: String, _ lines: [String]) -> [APViolation] {
+        if filePath.lowercased().contains("test") { return [] }
+        let sensitiveWords = ["password", "passwd", "token", "secret", "key", "credential", "auth", "pin"]
+        var out: [APViolation] = []
+        for (i, line) in lines.enumerated() {
+            if isComment(line) { continue }
+            let lower = line.lowercased()
+            // Must be an os_log / Logger call
+            guard lower.contains("os_log(") || lower.contains("logger.") || lower.contains("logger(") else { continue }
+            // Must contain a public %@ (i.e., NOT %{private}@ or %{sensitive}@)
+            guard line.contains("%@") && !line.contains("{private}") && !line.contains("{sensitive}") else { continue }
+            // Must involve a sensitive keyword
+            if sensitiveWords.contains(where: { lower.contains($0) }) {
+                out.append(viol(filePath, i, lines))
+                if out.count >= maxViolations { break }
             }
         }
         return out

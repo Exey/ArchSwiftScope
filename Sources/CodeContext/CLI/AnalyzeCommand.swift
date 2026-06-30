@@ -70,7 +70,8 @@ struct AnalyzeCommand: AsyncParsableCommand {
         let repoPath = URL(fileURLWithPath: path).standardizedFileURL.path
 
         let secT0 = CFAbsoluteTimeGetCurrent()
-        print("\n\(ts()) 🚨 Security risk checks · \(swiftFileCount) Swift files")
+        let checkCount = SecurityAnalyzer.checkCount
+        print("\n\(ts()) 🚨 Security risk checks · \(checkCount) checks · \(swiftFileCount) Swift files")
 
         let priLabel: (APPriority) -> String = {
             switch $0 { case .high: return "HIGH"; case .medium: return "MED "; case .low: return "LOW " }

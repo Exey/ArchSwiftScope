@@ -58,7 +58,7 @@ swift build -c release
    - Each entry shows a protocol tag (REST · WebSocket · gRPC · GraphQL · TCP), URI or detected pattern, data format (JSON / Protobuf / XML), and a clickable VS Code link to the source file and line
 
 
-4.🚨 **Security Risks** - (60 active checks · index 0–1000)
+4.🚨 **Security Risks** - (63 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
    
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_sec.svg)
