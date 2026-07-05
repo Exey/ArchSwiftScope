@@ -58,12 +58,12 @@ swift build -c release
    - Each entry shows a protocol tag (REST · WebSocket · gRPC · GraphQL · TCP), URI or detected pattern, data format (JSON / Protobuf / XML), and a clickable VS Code link to the source file and line
 
 
-4.🚨 **Security Risks** - (63 active checks · index 0–1000)
+5.🚨 **Security Risks** - (63 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
    
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_sec.svg)
 
-5. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
+6. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
    - **🌿 Branch Management** — total branch count (local + remote), avg branch lifetime, time-to-merge, integration delay, rollback rate, peak commit day, stale branches (>90 days inactive), and already-merged branches
    - **🔀 Branching Model** — role-based classifier that detects **Gitflow**, **Trunk-Based Development**, **GitHub Flow**, **GitLab Flow**, and **OneFlow** from the `.git` commit DAG. Scores all five models against the same evidence and displays ranked confidence bars. 
@@ -72,23 +72,23 @@ swift build -c release
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_git.svg)
 
-6. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+7. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_hot.svg)
 
-7. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
+8. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_funcs.svg)
 
-8. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
+9. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_modules.svg)
 
-9. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
+10. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_pkgs.svg)
 
-10. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
+11. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_assets.svg)
 
