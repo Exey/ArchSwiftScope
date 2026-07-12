@@ -227,7 +227,7 @@ struct ReportGenerator {
         apResults: [APResult] = [],
         oopStats: OOPvsPOPStats? = nil,
         securityScore: SecurityScore? = nil,
-        skipModules: Bool = false,
+        renderModules: Bool = true,
         githubURL: String = "",
         headCommit: String = ""
     ) throws {
@@ -533,9 +533,17 @@ struct ReportGenerator {
             return "<div class='component-grid'>\(items)</div>"
         }()
 
+        // ─── Programming Methods (design patterns · data structures · algorithms · magic constants) ───
+        // Always rendered. Runs through the single ConstructScanner core — one
+        // shared source read for all detectors.
+        print("\(ts())  Detecting programming methods...")
+        let constructs = ConstructScanner().scan(files: archFiles) { print("\(ts())  \($0)") }
+        let detectedPatterns = constructs.patterns
+        let dsMatches = constructs.dataStructures
+        let algoMatches = constructs.algorithms
+        let constantMatches = constructs.magicConstants
+
         // Design Patterns
-        print("\(ts())  Detecting design patterns...")
-        let detectedPatterns = DesignPatternDetector().detect(files: archFiles)
         let designPatternsSubCardHTML: String = {
             guard !detectedPatterns.isEmpty else { return "" }
             let byCategory = Dictionary(grouping: detectedPatterns, by: \.category)
@@ -543,9 +551,16 @@ struct ReportGenerator {
                 let items = (byCategory[cat] ?? []).map { p -> String in
                     let fileName = URL(fileURLWithPath: p.examplePath).lastPathComponent
                     let fileLink = vsLink(path: p.examplePath, label: esc(fileName))
+                    let nameHTML: String
+                    if let url = WikipediaLinks.url(forPattern: p.name) {
+                        nameHTML = "<a class='dp-item-name ds-wiki-link' href=\"\(url)\" target='_blank' rel='noopener noreferrer' title='Wikipedia: \(esc(p.name))'>\(esc(p.name))</a>"
+                    } else {
+                        nameHTML = "<span class='dp-item-name'>\(esc(p.name))</span>"
+                    }
+                    let idiomBadge = p.isLanguageIdiom ? " <span class='dp-idiom-badge' title='Absorbed into the language — most real Swift codebases have this, not necessarily a deliberate pattern choice'>language feature</span>" : ""
                     return """
-                    <div class='dp-item'>\
-                    <div class='dp-item-top'><span class='dp-item-name'>\(esc(p.name))</span><span class='dp-item-count'>\(p.count)</span></div>\
+                    <div class='dp-item\(p.isLanguageIdiom ? " dp-item-idiom" : "")'>\
+                    <div class='dp-item-top'>\(nameHTML)\(idiomBadge)<span class='dp-item-count'>\(p.count)</span></div>\
                     <div class='dp-item-detail'>\(esc(p.detail))</div>\
                     <div class='dp-item-link'>\(fileLink)</div>\
                     </div>
@@ -555,10 +570,20 @@ struct ReportGenerator {
             }.joined(separator: "\n")
             return "<div class='dp-grid'>\(cols)</div>"
         }()
-        let totalPatternCount = detectedPatterns.count
-        if totalPatternCount > 0 {
-            print("\(ts())  Design patterns: \(totalPatternCount) detected (\(detectedPatterns.map(\.name).joined(separator: ", ")))")
-        }
+        // Deliberate pattern choices only — Extension/Lazy Initialization/Monitor
+        // Object are language features almost every codebase "has", not a signal
+        // of how many patterns were chosen, so they're shown (muted, badged) but
+        // excluded from this headline count.
+        let totalPatternCount = detectedPatterns.filter { !$0.isLanguageIdiom }.count
+
+        // Data Structures
+        let dsSubCardHTML: String = buildDSHTML(dsMatches)
+
+        // Algorithms
+        let algoSubCardHTML: String = buildAlgoHTML(algoMatches)
+
+        // Magic Constants
+        let constantsSubCardHTML: String = buildConstantsHTML(constantMatches)
 
         // Apple Frameworks — exclude any already shown in Components
         let filteredAppleFrameworks = usedAppleFrameworks.subtracting(componentCoveredFrameworks)
@@ -985,14 +1010,39 @@ struct ReportGenerator {
             if showArchGraph {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🗺️ Architecture Graph <span class='count'>(\(archRawConnections) connections)</span></h3><div id='arch-graph' class='arch-graph-container'></div></div>"
             }
-            if !designPatternsSubCardHTML.isEmpty {
-                h += "<div class='sub-card'><h3 class='sub-card-title'>🎨 Design Patterns <span class='count'>(\(totalPatternCount))</span></h3>\(designPatternsSubCardHTML)</div>"
-            }
             if !localPackagesSubCardHTML.isEmpty {
                 h += "<div class='sub-card'><h3 class='sub-card-title'>🏠 Local Packages</h3>\(localPackagesSubCardHTML)</div>"
             }
             return h
         }()
+
+        // Programming Methods card — design patterns, data structures, and
+        // algorithms detected in the codebase. Split out of Architecture so those
+        // three code-construct sub-cards live under one dedicated heading, placed
+        // right after OOP vs POP in the final layout.
+        let programmingMethodsCardHTML: String = {
+            var h = "<h2>🧠 Programming Methods</h2>"
+            if !designPatternsSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🎨 Design Patterns <span class='count'>(\(totalPatternCount))</span></h3>\(designPatternsSubCardHTML)</div>"
+            }
+            if !dsSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🌳 Data Structures <span class='count'>(\(dsMatches.count))</span></h3>\(dsSubCardHTML)</div>"
+            }
+            if !algoSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🔀 Algorithms <span class='count'>(\(algoMatches.count))</span></h3>\(algoSubCardHTML)</div>"
+            }
+            let bigO = buildComplexityHTML(constructs.complexity)
+            if !bigO.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🅾️ Big O Complexity Health</h3>\(bigO)</div>"
+            }
+            if !constantsSubCardHTML.isEmpty {
+                h += "<div class='sub-card'><h3 class='sub-card-title'>🔢 Magic Constants <span class='count'>(\(constantMatches.count))</span></h3>\(constantsSubCardHTML)</div>"
+            }
+            return h
+        }()
+        let hasProgrammingMethods = !designPatternsSubCardHTML.isEmpty
+            || !dsSubCardHTML.isEmpty || !algoSubCardHTML.isEmpty
+            || !constantsSubCardHTML.isEmpty || constructs.complexity.hasData
 
         // ─── 3. Packages ───
         let appTargetName = "App"
@@ -1007,8 +1057,8 @@ struct ReportGenerator {
         var packageSections = ""
         var packageGraphScripts = ""
 
-        if skipModules {
-            print("\(ts())  Skipping Packages & Modules (--skip-modules)")
+        if !renderModules {
+            print("\(ts())  Skipping Packages & Modules (enable with --render-modules)")
         } else {
         print("\(ts())  Building \(packages.count) package sections (parallel)...")
 
@@ -1140,9 +1190,9 @@ struct ReportGenerator {
 
         packageSections = pkgSectionArr.joined()
         packageGraphScripts = pkgScriptArr.joined()
-        } // end if !skipModules
+        } // end if renderModules
 
-        // Arch-level graph script — always emitted regardless of --skip-modules,
+        // Arch-level graph script — always emitted regardless of --render-modules,
         // because the architecture graph is a cross-module view, not a per-module detail.
         if showArchGraph {
             packageGraphScripts += """
@@ -1488,8 +1538,8 @@ struct ReportGenerator {
             <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
             <title>🔬 ArchSwiftScope — \(esc(projectName))</title>
             <style>
-                :root,[data-theme="light"] { --bg:#f5f5f7;--bg2:#fafafa;--card:#fff;--border:#e5e5ea;--text:#1d1d1f;--text2:#424245;--text3:#86868b;--accent:#0071e3;--red:#ff3b30;--graph-bg:#fafafa; }
-                [data-theme="dark"] { --bg:#1c1c1e;--bg2:#2c2c2e;--card:#2c2c2e;--border:#3a3a3c;--text:#f5f5f7;--text2:#ebebf5;--text3:#8e8e93;--accent:#0a84ff;--red:#ff453a;--graph-bg:#1e1e20; }
+                :root,[data-theme="light"] { --bg:#f5f5f7;--bg2:#fafafa;--card:#fff;--border:#e5e5ea;--text:#1d1d1f;--text2:#424245;--text3:#86868b;--accent:#0071e3;--red:#ff3b30;--green:#34c759;--orange:#ff9500;--teal:#00a3a3;--pink:#ff2d92;--magenta:#c026d3;--yellow:#b8860b;--graph-bg:#fafafa; }
+                [data-theme="dark"] { --bg:#1c1c1e;--bg2:#2c2c2e;--card:#2c2c2e;--border:#3a3a3c;--text:#f5f5f7;--text2:#ebebf5;--text3:#8e8e93;--accent:#0a84ff;--red:#ff453a;--green:#30d158;--orange:#ff9f0a;--teal:#5ee6e6;--pink:#ff6bb3;--magenta:#e879f9;--yellow:#f5d442;--graph-bg:#1e1e20; }
                 [data-theme="dark"] body { color-scheme: dark; }
                 [data-theme="dark"] .ap-fail-badge { background:#3a1c1c; }
                 [data-theme="dark"] .card { box-shadow:0 1px 12px rgba(0,0,0,0.35); }
@@ -1671,7 +1721,50 @@ struct ReportGenerator {
                 .arch-letter-card.health-missing .arch-letter-big { color: var(--text3); }
                 .arch-letter-card.orthogonal { opacity: 0.5; }
                 .arch-letter-sep { width: 1px; background: var(--border); margin: 0 4px; flex-shrink: 0; align-self: stretch; min-height: 60px; }
-                .dp-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+                .ds-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+                .ds-group-full { grid-column: 1 / -1; }
+                .ds-group-head { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text3); margin-bottom: 6px; }
+                .ds-items { display: flex; flex-direction: column; gap: 8px; }
+                .ds-items-2col { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
+                .ds-item { background: var(--bg); border-radius: 8px; padding: 9px 12px; width: 100%; box-sizing: border-box; }
+                .ds-item-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+                .ds-item-name { font-size: 13px; font-weight: 600; color: var(--text); }
+                .ds-item-detail { font-size: 11px; color: var(--text3); margin: -2px 0 6px; line-height: 1.4; }
+                a.ds-wiki-link { text-decoration: none; border-bottom: 1px dotted var(--text3); }
+                a.ds-wiki-link:hover { border-bottom-style: solid; border-bottom-color: var(--accent); }
+                .ds-item-count { font-size: 16px; font-weight: 700; color: var(--accent); font-family: 'SF Mono', Menlo, monospace; flex-shrink: 0; }
+                .ds-item-occ { font-size: 11px; color: var(--text3); font-family: 'SF Mono', Menlo, monospace; column-count: 3; column-gap: 16px; }
+                .ds-occ { display: block; line-height: 1.9; padding: 1px 0; word-break: break-word; break-inside: avoid; }
+                .ds-more { color: var(--text3); opacity: 0.7; font-style: italic; }
+                .ds-item-occ a.vs-link { color: var(--accent); text-decoration: none; }
+                .ds-item-occ a.vs-link:hover { text-decoration: underline; }
+                .ds-module { font-size: 10px; color: var(--text3); background: var(--bg2); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; margin-right: 4px; vertical-align: middle; opacity: 0.85; }
+                .bigo-usage { font-size: 13px; color: var(--text2); margin: 0 0 14px; }
+                .bigo-usage b { color: var(--text); font-family: 'SF Mono', Menlo, monospace; }
+                .bigo-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 18px; }
+                @media (max-width: 640px) { .bigo-bars { grid-template-columns: 1fr; } }
+                .bigo-bar-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+                .bigo-score { font-family: 'SF Mono', Menlo, monospace; font-size: 20px; font-weight: 700; }
+                .bigo-score-max { font-size: 12px; font-weight: 400; color: var(--text3); }
+                .bigo-track { height: 8px; border-radius: 5px; background: var(--bg2); overflow: hidden; }
+                .bigo-fill { height: 100%; border-radius: 5px; transition: width .3s; }
+                .bigo-bar-sub { font-size: 11px; color: var(--text3); margin-top: 5px; }
+                .bigo-viol-group { margin-top: 14px; }
+                .bigo-viol-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); margin-bottom: 8px; }
+                .bigo-viol { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 12px; flex-wrap: wrap; }
+                .bigo-order { font-family: 'SF Mono', Menlo, monospace; font-weight: 700; font-size: 13px; color: var(--red); flex-shrink: 0; min-width: 46px; }
+                .bigo-exp { font-size: 15px; font-weight: 800; }
+                .bigo-exp-2 { color: var(--teal); }
+                .bigo-exp-3 { color: var(--pink); }
+                .bigo-exp-4 { color: var(--magenta); }
+                .bigo-exp-n { color: var(--yellow); }
+                .bigo-sym { font-family: 'SF Mono', Menlo, monospace; color: var(--text); font-weight: 600; }
+                .bigo-reason { color: var(--text3); flex: 1 1 auto; }
+                .bigo-link { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; white-space: nowrap; }
+                .bigo-more { color: var(--text3); font-style: italic; }
+                .bigo-clean { font-size: 13px; color: var(--green); margin: 6px 0 0; }
+                .dp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+                @media (max-width: 1100px) { .dp-grid { grid-template-columns: 1fr 1fr; } }
                 .dp-col-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); margin-bottom: 8px; }
                 .dp-item { background: var(--bg); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; }
                 .dp-item-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
@@ -1679,8 +1772,10 @@ struct ReportGenerator {
                 .dp-item-name { font-size: 13px; font-weight: 600; color: var(--text); }
                 .dp-item-count { font-size: 18px; font-weight: 700; color: var(--accent); font-family: 'SF Mono', Menlo, monospace; flex-shrink: 0; }
                 .dp-item-detail { font-size: 11px; color: var(--text3); margin-top: 3px; }
+                .dp-item-idiom { opacity: 0.7; }
+                .dp-idiom-badge { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text3); background: var(--bg2); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; white-space: nowrap; }
                 .dp-item-link { font-size: 11px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'SF Mono', Menlo, monospace; }
-                @media (max-width: 768px) { .dp-grid { grid-template-columns: 1fr; } }
+                @media (max-width: 768px) { .dp-grid, .ds-sections, .ds-items-2col { grid-template-columns: 1fr; } .ds-item-occ { column-count: 1; } }
                 .bm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
                 .bm-card { background: var(--bg); border-radius: 10px; padding: 12px; text-align: center; }
                 .bm-value { font-size: 22px; font-weight: 700; color: var(--accent); }
@@ -1795,6 +1890,7 @@ struct ReportGenerator {
             <div class="card">
                 \(oopCardHTML)
             </div>
+            \(hasProgrammingMethods ? "<div class=\"card\">\(programmingMethodsCardHTML)</div>" : "")
             \(trafficResult.hasData ? "<div class=\"card\">\(buildTrafficHTML(trafficResult))</div>" : "")
             <div class="card">
                 \(apCardHTML)
@@ -1892,13 +1988,13 @@ struct ReportGenerator {
                 </table></div>
                 """)
             </div>
-            \(skipModules ? "" : """
+            \(renderModules ? """
             <div class="card">
                 <h2>📦 Packages & Modules</h2>
                 <p class="subtitle">Showing files with ≥ 20 lines and at least one declaration. Graphs: type references between declarations. <span style="color:#007aff">●</span> class <span style="color:#34c759">●</span> struct <span style="color:#ff9500">●</span> enum <span style="color:#ff3b30">●</span> actor. Arrows from class/actor only.</p>
                 \(packageSections)
             </div>
-            """)
+            """ : "")
             \(metadata.assets.totalSizeBytes > 0 ? {
                 let a = metadata.assets
                 let totalMB = String(format: "%.1f", Double(a.totalSizeBytes) / 1_048_576.0)
@@ -2196,6 +2292,19 @@ struct ReportGenerator {
          .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
     }
 
+    /// `occ.module` as reported by the parser, when it has one; otherwise the
+    /// file's immediate containing folder, so a construct occurrence in a
+    /// project with no SwiftPM `Sources/<Module>` layout or `Package.swift`
+    /// (a plain Xcode-target codebase) still gets *some* grouping label
+    /// instead of no badge at all. This is a display-only fallback — it
+    /// never writes back into `ParsedFile.moduleName`, which other sections
+    /// (the dependency graph, traffic scanner) rely on meaning "SwiftPM
+    /// module", not "nearest folder".
+    private func moduleBadgeLabel(_ module: String, filePath: String) -> String {
+        guard module.isEmpty else { return module }
+        return URL(fileURLWithPath: filePath).deletingLastPathComponent().lastPathComponent
+    }
+
     private func vsLink(path: String, label: String, line: Int? = nil) -> String {
         let href = line.map { "vscode://file/\(path):\($0)" } ?? "vscode://file/\(path)"
         let lineAttr = line.map { " data-line=\"\($0)\"" } ?? ""
@@ -2404,6 +2513,221 @@ struct ReportGenerator {
         if base == "addressbook" || base == "addressbookui" { return "Data/Networking" }
 
         return "Data/Networking"
+    }
+
+    // MARK: - Data Structures Card
+
+    private func buildDSHTML(_ matches: [DSMatch]) -> String {
+        guard !matches.isEmpty else { return "" }
+        let byCat = Dictionary(grouping: matches, by: \.category)
+        // A lone populated category would otherwise sit in the left half of the
+        // 2-column `.ds-sections` grid with the right half empty — let it span
+        // the full card width instead.
+        let populatedCats = DSCategory.allCases.filter { !(byCat[$0] ?? []).isEmpty }.count
+        var h = "<div class='ds-sections'>"
+        for cat in DSCategory.allCases {
+            guard let items = byCat[cat], !items.isEmpty else { continue }
+            h += "<div class='ds-group\(populatedCats == 1 ? " ds-group-full" : "")'>"
+            h += "<div class='ds-group-head'>\(cat.icon) \(esc(cat.rawValue.uppercased()))</div>"
+            h += "<div class='ds-items'>"
+            for m in items {
+                h += "<div class='ds-item'>"
+                h += "<div class='ds-item-top'>\(dsNameHTML(m.name))<span class='ds-item-count'>\(m.count)</span></div>"
+                if let detail = DataStructureDetector.detail(forLinkedMatch: m.name) {
+                    h += "<div class='ds-item-detail'>\(esc(detail))</div>"
+                }
+                let maxOcc = 50
+                let sortedOcc = m.occurrences.sorted { $0.module < $1.module }
+                var occParts: [String] = []
+                for (idx, occ) in sortedOcc.enumerated() {
+                    if idx == maxOcc { occParts.append("<span class='ds-occ ds-more'>+\(sortedOcc.count - maxOcc) more</span>"); break }
+                    let label = occ.line > 0 ? "\(esc(occ.typeName)):\(occ.line)" : esc(occ.typeName)
+                    let link = occ.line > 0
+                        ? vsLink(path: occ.filePath, label: label, line: occ.line)
+                        : vsLink(path: occ.filePath, label: label)
+                    let modLabel = moduleBadgeLabel(occ.module, filePath: occ.filePath)
+                    let modBadge = modLabel.isEmpty ? "" : "<span class='ds-module'>\(esc(modLabel))</span>"
+                    occParts.append("<span class='ds-occ'>\(modBadge)\(link)</span>")
+                }
+                h += "<div class='ds-item-occ'>\(occParts.joined())</div>"
+                h += "</div>"
+            }
+            h += "</div></div>"
+        }
+        h += "</div>"
+        return h
+    }
+
+    private func dsNameHTML(_ name: String) -> String {
+        guard let url = WikipediaLinks.url(forDataStructure: name) else {
+            return "<span class='ds-item-name'>\(esc(name))</span>"
+        }
+        return "<a class='ds-item-name ds-wiki-link' href=\"\(url)\" target='_blank' rel='noopener noreferrer' title='Wikipedia: \(esc(name))'>\(esc(name))</a>"
+    }
+
+    private func algoNameHTML(_ name: String) -> String {
+        guard let url = WikipediaLinks.url(forAlgorithm: name) else {
+            return "<span class='ds-item-name'>\(esc(name))</span>"
+        }
+        return "<a class='ds-item-name ds-wiki-link' href=\"\(url)\" target='_blank' rel='noopener noreferrer' title='Wikipedia: \(esc(name))'>\(esc(name))</a>"
+    }
+
+    // MARK: - Algorithms Card
+
+    private func buildAlgoHTML(_ matches: [AlgoMatch]) -> String {
+        guard !matches.isEmpty else { return "" }
+        let byCat = Dictionary(grouping: matches, by: \.category)
+        let populatedCats = AlgoCategory.allCases.filter { !(byCat[$0] ?? []).isEmpty }.count
+        var h = "<div class='ds-sections'>"
+        for cat in AlgoCategory.allCases {
+            guard let items = byCat[cat], !items.isEmpty else { continue }
+            h += "<div class='ds-group\(populatedCats == 1 ? " ds-group-full" : "")'>"
+            h += "<div class='ds-group-head'>\(cat.icon) \(esc(cat.rawValue.uppercased()))</div>"
+            h += "<div class='ds-items'>"
+            for m in items {
+                h += "<div class='ds-item'>"
+                h += "<div class='ds-item-top'>\(algoNameHTML(m.name))<span class='ds-item-count'>\(m.count)</span></div>"
+                let maxOcc = 50
+                let sortedOcc = m.occurrences.sorted { $0.module < $1.module }
+                var occParts: [String] = []
+                for (idx, occ) in sortedOcc.enumerated() {
+                    if idx == maxOcc { occParts.append("<span class='ds-occ ds-more'>+\(sortedOcc.count - maxOcc) more</span>"); break }
+                    let label = occ.line > 0 ? "\(esc(occ.symbol)):\(occ.line)" : esc(occ.symbol)
+                    let link = occ.line > 0
+                        ? vsLink(path: occ.filePath, label: label, line: occ.line)
+                        : vsLink(path: occ.filePath, label: label)
+                    let modLabel = moduleBadgeLabel(occ.module, filePath: occ.filePath)
+                    let modBadge = modLabel.isEmpty ? "" : "<span class='ds-module'>\(esc(modLabel))</span>"
+                    occParts.append("<span class='ds-occ'>\(modBadge)\(link)</span>")
+                }
+                h += "<div class='ds-item-occ'>\(occParts.joined())</div>"
+                h += "</div>"
+            }
+            h += "</div></div>"
+        }
+        h += "</div>"
+        return h
+    }
+
+    // MARK: - Magic Constants Card
+
+    private func buildConstantsHTML(_ matches: [ConstantMatch]) -> String {
+        guard !matches.isEmpty else { return "" }
+        let byCat = Dictionary(grouping: matches, by: \.category)
+        let populatedCats = AlgoCategory.allCases.filter { !(byCat[$0] ?? []).isEmpty }.count
+        var h = "<div class='ds-sections'>"
+        for cat in AlgoCategory.allCases {
+            guard let items = byCat[cat], !items.isEmpty else { continue }
+            h += "<div class='ds-group\(populatedCats == 1 ? " ds-group-full" : "")'>"
+            h += "<div class='ds-group-head'>\(cat.icon) \(esc(cat.rawValue.uppercased()))</div>"
+            h += "<div class='ds-items ds-items-2col'>"
+            for m in items {
+                h += "<div class='ds-item'>"
+                h += "<div class='ds-item-top'>\(algoNameHTML(m.name))<span class='ds-item-count'>\(m.count)</span></div>"
+                let maxOcc = 50
+                let sortedOcc = m.occurrences.sorted { $0.module < $1.module }
+                var occParts: [String] = []
+                for (idx, occ) in sortedOcc.enumerated() {
+                    if idx == maxOcc { occParts.append("<span class='ds-occ ds-more'>+\(sortedOcc.count - maxOcc) more</span>"); break }
+                    let label = occ.line > 0 ? "\(esc(occ.symbol)):\(occ.line)" : esc(occ.symbol)
+                    let link = occ.line > 0
+                        ? vsLink(path: occ.filePath, label: label, line: occ.line)
+                        : vsLink(path: occ.filePath, label: label)
+                    let modLabel = moduleBadgeLabel(occ.module, filePath: occ.filePath)
+                    let modBadge = modLabel.isEmpty ? "" : "<span class='ds-module'>\(esc(modLabel))</span>"
+                    occParts.append("<span class='ds-occ'>\(modBadge)\(link)</span>")
+                }
+                h += "<div class='ds-item-occ'>\(occParts.joined())</div>"
+                h += "</div>"
+            }
+            h += "</div></div>"
+        }
+        h += "</div>"
+        return h
+    }
+
+    // MARK: - Big O Complexity Health
+
+    private func buildComplexityHTML(_ report: ComplexityReport) -> String {
+        guard report.hasData else { return "" }
+
+        func healthColor(_ v: Int) -> String {
+            v >= 80 ? "var(--green)" : v >= 50 ? "var(--orange)" : "var(--red)"
+        }
+        func bar(icon: String, label: String, value: Int, hotspots: Int) -> String {
+            let hs = hotspots == 0 ? "no hotspots" : "\(hotspots) hotspot\(hotspots == 1 ? "" : "s")"
+            return """
+            <div class='bigo-bar'>\
+            <div class='bigo-bar-head'><span>\(icon) \(esc(label))</span>\
+            <span class='bigo-score' style='color:\(healthColor(value))'>\(value)<span class='bigo-score-max'>/100</span></span></div>\
+            <div class='bigo-track'><div class='bigo-fill' style='width:\(value)%;background:\(healthColor(value))'></div></div>\
+            <div class='bigo-bar-sub'>\(hs)</div>\
+            </div>
+            """
+        }
+
+        // Collection usage line
+        let u = report.usage
+        var usageParts: [String] = []
+        if u.array > 0 {
+            let lazySuffix = u.lazy > 0 ? " <span style='color:var(--text3)'>(lazy <b>\(u.lazy)</b>)</span>" : ""
+            usageParts.append("Array <b>\(u.array)</b>\(lazySuffix)")
+        }
+        if u.dictionary > 0 { usageParts.append("Dictionary <b>\(u.dictionary)</b>") }
+        if u.set > 0        { usageParts.append("Set <b>\(u.set)</b>") }
+        if u.sequence > 0   { usageParts.append("Sequence <b>\(u.sequence)</b>") }
+        let usageLine = usageParts.isEmpty ? ""
+            : "<p class='bigo-usage'>Classic collections in use — \(usageParts.joined(separator: " · "))</p>"
+
+        var h = "<p class='subtitle'>Heuristic estimate from iteration nesting (nested loops &amp; higher-order closures) and collection allocations. Anything O(N²) or worse is listed below.</p>"
+        h += usageLine
+        h += "<div class='bigo-bars'>"
+        h += bar(icon: "⏱️", label: "Time Complexity Health", value: report.timeHealth, hotspots: report.timeViolations.count)
+        h += bar(icon: "📦", label: "Space Complexity Health", value: report.spaceHealth, hotspots: report.spaceViolations.count)
+        h += "</div>"
+
+        func violationList(_ title: String, _ vs: [ComplexityViolation]) -> String {
+            guard !vs.isEmpty else { return "" }
+            let maxShown = 40
+            var rows = ""
+            for (i, v) in vs.enumerated() {
+                if i == maxShown {
+                    rows += "<div class='bigo-viol bigo-more'>+\(vs.count - maxShown) more</div>"
+                    break
+                }
+                let fileName = URL(fileURLWithPath: v.filePath).lastPathComponent
+                let link = vsLink(path: v.filePath, label: esc("\(fileName):\(v.line)"), line: v.line)
+                let modBadge = v.module.isEmpty ? "" : "<span class='ds-module'>\(esc(v.module))</span>"
+                let expClass: String
+                switch v.order {
+                case 2: expClass = "bigo-exp-2"
+                case 3: expClass = "bigo-exp-3"
+                case 4: expClass = "bigo-exp-4"
+                default: expClass = "bigo-exp-n"
+                }
+                let orderBadge = v.exponentChar.isEmpty
+                    ? "O(N)"
+                    : "O(N<span class='bigo-exp \(expClass)'>\(v.exponentChar)</span>)"
+                rows += """
+                <div class='bigo-viol'>\
+                <span class='bigo-order'>\(orderBadge)</span>\
+                <span class='bigo-sym'>\(esc(v.symbol))</span>\
+                <span class='bigo-reason'>\(esc(v.reason))</span>\
+                <span class='bigo-link'>\(modBadge)\(link)</span>\
+                </div>
+                """
+            }
+            return "<div class='bigo-viol-group'><div class='bigo-viol-head'>\(esc(title))</div>\(rows)</div>"
+        }
+
+        let lists = violationList("⏱️ Time hotspots", report.timeViolations)
+            + violationList("📦 Space hotspots", report.spaceViolations)
+        if lists.isEmpty {
+            h += "<p class='bigo-clean'>✓ No O(N²)+ hotspots detected.</p>"
+        } else {
+            h += lists
+        }
+        return h
     }
 
     // MARK: - Traffic Card

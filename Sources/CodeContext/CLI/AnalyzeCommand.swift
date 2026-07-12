@@ -28,8 +28,8 @@ struct AnalyzeCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Log subproject/package detection details")
     var debugSubproject: Bool = false
 
-    @Flag(name: .long, help: "Skip Packages & Modules section (faster for large codebases)")
-    var skipModules: Bool = false
+    @Flag(name: .long, help: "Render the Packages & Modules breakdown. Off by default for a faster scan.")
+    var renderModules: Bool = false
 
     @Option(name: .long, help: "GitHub repository URL to enable link toggling (e.g. https://github.com/owner/repo)")
     var githubLinks: String = ""
@@ -136,7 +136,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
             apResults: apResults,
             oopStats: oopStats,
             securityScore: securityScore,
-            skipModules: skipModules,
+            renderModules: renderModules,
             githubURL: githubLinks,
             headCommit: result.headCommit
         )

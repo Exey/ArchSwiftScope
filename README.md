@@ -30,7 +30,7 @@ swift build -c release
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_summary.svg)
 
 
-2. **🏛️ Architecture** — structural decomposition across 8 sub-sections:
+2. **🏛️ Architecture** — structural decomposition across 7 sub-sections:
    - **🎨 Arch Pattern** — MV, MVVV, VIPER, RIBs and other
    - **📐 Layers** — files classified by directory/naming patterns into UI/Views, Presentation, Models, API/Networking, Persistence, Auth, Config, Utilities, Tests, Core — with file counts, line counts, and proportional bar chart
    - **🧩 Components** — detected architectural components from Apple framework imports (SwiftUI, UIKit, CoreData, Combine, ARKit, CoreML, and 30+ more)
@@ -38,7 +38,6 @@ swift build -c release
    - **📦 External Libraries** — third-party package imports detected across the codebase
    - **🏠 Local Packages** — Swift Package Manager modules with file counts, line counts, build-system badges (SwiftUI/UIKit/AppKit), Metal shader indicators, and clickable navigation links
    - **🗺️ Architecture Graph** — top-level inter-package dependency graph
-   - **🎨 Design Patterns** — detected GoF and architectural patterns (Singleton, Factory, Observer, Coordinator, and more) grouped by category with occurrence counts and example file links
 
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_arch.svg)
 
@@ -52,18 +51,25 @@ swift build -c release
 
 ![ArchSwiftScope](https://exey.github.io/ArchScopeDocs/ass_oop.svg)
 
-4. **🛜 Traffic** — inbound and outbound connection signals detected across all source files *(shown only when signals are present)*:
+4. **🧠 Programming Methods** — code-construct detection across 5 sub-sections:
+   - **🎨 Design Patterns** — detected GoF and architectural patterns (Singleton, Factory, Observer, Coordinator, and more) grouped by category with occurrence counts and example file links
+   - **🌳 Data Structures** — developer-implemented data structures detected by type-name conventions (linked lists, trees, heaps, hash tables, graphs, caches, and more), grouped by category with occurrence counts, module labels, and clickable VS Code links
+   - **🔀 Algorithms** — well-known algorithm implementations detected from function and type naming (sorting, searching, graph/shortest-path/flow, string matching, numeric & classic), grouped by category with occurrence counts, module labels, and clickable VS Code links
+   - **🅾️ Big O Complexity Health** — heuristic time/space complexity scoring (0–100) from loop-nesting depth and in-loop collection allocations, with hotspot links to every O(N²)-or-worse call site
+   - **🔢 Magic Constants** — algorithm fingerprints from well-known constant literals in function bodies (FNV primes, CRC-32 polynomial, MD5/SHA initialization vectors, Mersenne Twister/xorshift/MurmurHash constants, ChaCha initialization, and more), grouped by category with clickable VS Code links
+
+5. **🛜 Traffic** — inbound and outbound connection signals detected across all source files *(shown only when signals are present)*:
    - **📥 Inbound** — Vapor/server-side Swift route definitions (`app.get`, `routes.post`, …) and TCP server declarations (`NWListener`)
    - **📤 Outbound** — HTTP/HTTPS/WebSocket URL string literals; TCP connections via `NWConnection` (Network.framework), `NWPathMonitor` (reachability), `SCNetworkReachabilityCreateWithName` (SystemConfiguration), BSD POSIX `socket(…SOCK_STREAM…)`, and `CFStreamCreatePairWithSocketToHost` (Core Foundation)
    - Each entry shows a protocol tag (REST · WebSocket · gRPC · GraphQL · TCP), URI or detected pattern, data format (JSON / Protobuf / XML), and a clickable VS Code link to the source file and line
 
 
-5.🚨 **Security Risks** - (63 active checks · index 0–1000)
+6.🚨 **Security Risks** - (63 active checks · index 0–1000)
    Higher index = more risk. DANGER INDEX aggregates 14 weighted categories; each category's risk scales with violation density. Per-category weight bars and clickable VS Code links to every violation. Categories without active checks are shown as *not assessed*.
    
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_sec.svg)
 
-6. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
+7. **🐙 Git Analysis** — full git history intelligence across 6 sub-sections:
    - **👥 Team Contribution Map** — developer activity with files modified, commit counts, first/last change dates, and top-3 modules per author
    - **🌿 Branch Management** — total branch count (local + remote), avg branch lifetime, time-to-merge, integration delay, rollback rate, peak commit day, stale branches (>90 days inactive), and already-merged branches
    - **🔀 Branching Model** — role-based classifier that detects **Gitflow**, **Trunk-Based Development**, **GitHub Flow**, **GitLab Flow**, and **OneFlow** from the `.git` commit DAG. Scores all five models against the same evidence and displays ranked confidence bars. 
@@ -72,23 +78,24 @@ swift build -c release
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_git.svg)
 
-7. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
+8. **🔥 Hot Zones** — files with the highest PageRank scores, identifying the most connected and architecturally significant code
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_hot.svg)
 
-8. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
+9. **📏 Longest Functions** — ranked list of functions by line count, with clickable VS Code links jumping directly to the function definition
+   - **📐 Biggest Named Types** — top 20 largest classes/structs/enums/protocols/actors by line count, with kind-colored tags and clickable VS Code links
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_funcs.svg)
 
-9. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
+10. **📋 Module Insights** — package penetration (which modules are foundational dependencies), plus TODO/FIXME density per module
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_modules.svg)
 
-10. **📦 Packages & Modules** — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
+11. **📦 Packages & Modules** (when --render-modules) — per-package breakdown with file inventory, declaration statistics, interactive force-directed dependency graph (colored by type), and inline documentation previews
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_pkgs.svg)
 
-11. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
+12. **🎨 Assets** *(shown when `.xcassets` are present)* — media resource analysis: total bundle size in MB, file count and size breakdown by type (image, audio, video), and top-3 heaviest files per category with individual file sizes
 
 ![ArchSwiftScope Security Risks](https://exey.github.io/ArchScopeDocs/ass_assets.svg)
 
@@ -173,8 +180,8 @@ codecontext analyze ~/Projects/MyApp
 # With options
 codecontext analyze ~/Projects/MyApp --no-cache --verbose --open
 
-# Skip the Packages & Modules section (faster for large codebases)
-codecontext analyze ~/Projects/MyApp --skip-modules --open
+# Render the Packages & Modules section (off by default, slower for large codebases)
+codecontext analyze ~/Projects/MyApp --render-modules --open
 
 # Enable GitHub link toggling in the report
 codecontext analyze ~/Projects/MyApp --github-links https://github.com/owner/repo --open
@@ -294,10 +301,17 @@ ArchSwiftScope/
 │   ├── Core/
 │   │   ├── AnalysisPipeline.swift         # Orchestrates all analysis passes
 │   │   ├── ArchAnalyzer.swift             # Architecture pattern + layer classifier
-│   │   ├── DesignPatternDetector.swift    # GoF / architectural pattern detection
 │   │   ├── OOPvsPOPAnalyzer.swift         # OOP vs POP scoring
 │   │   ├── SecurityAnalyzer.swift         # 55-check security index (0–1000)
 │   │   ├── MonkeyPatchedLibs.swift        # Vendored C/C++ library detection
+│   │   ├── Constructs/
+│   │   │   ├── ConstructScanner.swift     # Shared entry point for all construct detectors
+│   │   │   ├── SourceCache.swift          # One shared source read for every detector
+│   │   │   ├── DesignPatternDetector.swift# GoF / architectural pattern detection
+│   │   │   ├── DataStructureDetector.swift# Developer-implemented data structure detection
+│   │   │   ├── AlgorithmDetector.swift    # Well-known algorithm detection (naming + structural)
+│   │   │   ├── ComplexityDetector.swift   # Big-O complexity health heuristics
+│   │   │   └── MagicConstantDetector.swift# Algorithm fingerprinting from constant literals
 │   │   ├── Config/
 │   │   │   └── CodeContextConfig.swift    # Config models + loader
 │   │   ├── Cache/
@@ -325,7 +339,8 @@ ArchSwiftScope/
 │   │   └── Exceptions/
 │   │       └── CodeContextError.swift
 │   └── Output/
-│       └── ReportGenerator.swift          # Self-contained HTML report
+│       ├── ReportGenerator.swift          # Self-contained HTML report
+│       └── WikipediaLinks.swift           # Wikipedia links for detected patterns/structures/algorithms
 └── Tests/CodeContextTests/
     └── CodeContextTests.swift
 ```
